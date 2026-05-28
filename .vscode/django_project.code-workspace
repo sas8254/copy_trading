@@ -1,0 +1,71 @@
+{
+   "folders": [
+      {
+         "name": "ROOT",
+         "path": "../"
+      },
+      {
+         "name": "frontend",
+         "path": "../frontend"
+      },
+      {
+         "name": "backend",
+         "path": "../backend"
+      },
+      {
+         "name": "nginx",
+         "path": "../nginx"
+      }
+   ],
+   "settings": {
+      "files.exclude": {
+         "frontend/": true,
+         "backend/": true,
+         "nginx/": true
+      },
+      "search.exclude": {
+         "**/node_modules": true,
+         "**/dist": true,
+         "**/build": true,
+         "**/__pycache__": true,
+         "**/.venv": true,
+         "**/venv": true,
+         "**/.mypy_cache": true,
+         "**/.pytest_cache": true,
+         "**/coverage": true
+      },
+      "files.watcherExclude": {
+         "**/node_modules/**": true,
+         "**/.git/objects/**": true,
+         "**/.git/subtree-cache/**": true,
+         "**/dist/**": true,
+         "**/build/**": true,
+         "**/.venv/**": true,
+         "**/venv/**": true
+      },
+      "git.autorefresh": true,
+      "workbench.editor.enablePreview": false
+   },
+   "extensions": {
+      "recommendations": [ // Vue
+         "Vue.volar",
+         // Formatting
+         "esbenp.prettier-vscode",
+         // Linting
+         "dbaeumer.vscode-eslint",
+         // Python
+         "ms-python.python",
+         "ms-python.black-formatter",
+         // Docker
+         "ms-azuretools.vscode-docker",
+         // Git
+         "eamodio.gitlens",
+         // ENV files
+         "mikestead.dotenv",
+         // Better TOML support
+         "tamasfe.even-better-toml",
+         // YAML
+         "redhat.vscode-yaml"
+      ]
+   }
+}
