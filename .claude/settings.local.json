@@ -1,7 +1,8 @@
 {
   "permissions": {
     "allow": [
-      "Bash(python -c \"import secrets; print\\(secrets.token_urlsafe\\(50\\)\\)\")"
+      "Bash(python -c \"import secrets; print\\(secrets.token_urlsafe\\(50\\)\\)\")",
+      "Bash(docker compose *)"
     ]
   }
 }

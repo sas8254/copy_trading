@@ -15,11 +15,23 @@ services:
       timeout: 5s
       retries: 10
 
+  redis:
+    image: redis:6.2.7
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
   web:
     build:
       context: .
       dockerfile: Dockerfile
     restart: unless-stopped
+    command: daphne -b 0.0.0.0 -p 8000 core.asgi:application
     env_file: .env
     volumes:
       - .:/app
@@ -27,6 +39,38 @@ services:
       - "8000:8000"
     depends_on:
       db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  celery_worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    command: celery -A core worker -l info
+    env_file: .env
+    volumes:
+      - .:/app
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  celery_beat:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    command: celery -A core beat -l info --schedule /tmp/celerybeat-schedule
+    env_file: .env
+    volumes:
+      - .:/app
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
         condition: service_healthy
 
 volumes:

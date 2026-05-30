@@ -6,3 +6,18 @@ django-environ~=0.11
 django-cors-headers~=4.4
 whitenoise~=6.7
 gunicorn~=23.0
+
+# Async / realtime
+channels~=4.1
+channels-redis~=4.2
+daphne~=4.1
+
+# Background tasks
+celery~=5.4
+redis~=5.0
+
+# Broker
+# NOTE: kiteconnect 5.0.0 hard-pins autobahn==19.11.2, which has no wheel for
+# Python 3.12 and breaks the build. It is only needed for the Zerodha step, so
+# it is added there with a resolved version. Do not re-add a bare `kiteconnect`.
+# kiteconnect~=5.0

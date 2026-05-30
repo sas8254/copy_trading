@@ -1,0 +1,82 @@
+from django.contrib import admin
+
+from .models import (
+    Alert,
+    BrokerAccount,
+    CopyMapping,
+    CopyOrder,
+    PositionSnapshot,
+    Trade,
+)
+
+
+@admin.register(BrokerAccount)
+class BrokerAccountAdmin(admin.ModelAdmin):
+    list_display = ("label", "broker", "role", "active", "token_updated_at")
+    list_filter = ("broker", "role", "active")
+    search_fields = ("label",)
+    # Secrets are write-only-ish: hidden from the changelist, editable on the form.
+    fields = (
+        "label",
+        "broker",
+        "role",
+        "api_key",
+        "api_secret",
+        "access_token",
+        "token_updated_at",
+        "active",
+    )
+    readonly_fields = ("token_updated_at",)
+
+
+@admin.register(CopyMapping)
+class CopyMappingAdmin(admin.ModelAdmin):
+    list_display = ("master", "copy", "multiplier", "zero_qty_policy", "active")
+    list_filter = ("active", "zero_qty_policy")
+    autocomplete_fields = ("master", "copy")
+
+
+@admin.register(Trade)
+class TradeAdmin(admin.ModelAdmin):
+    list_display = (
+        "observed_at",
+        "account",
+        "side",
+        "quantity",
+        "tradingsymbol",
+        "exchange",
+        "status",
+    )
+    list_filter = ("account", "side", "exchange", "status")
+    search_fields = ("tradingsymbol", "broker_order_id")
+    date_hierarchy = "observed_at"
+
+
+@admin.register(CopyOrder)
+class CopyOrderAdmin(admin.ModelAdmin):
+    list_display = (
+        "created_at",
+        "mapping",
+        "computed_quantity",
+        "status",
+        "attempts",
+        "error_kind",
+    )
+    list_filter = ("status", "error_kind")
+    search_fields = ("broker_order_id", "error_code")
+
+
+@admin.register(PositionSnapshot)
+class PositionSnapshotAdmin(admin.ModelAdmin):
+    list_display = ("captured_at", "account", "tradingsymbol", "exchange", "net_quantity")
+    list_filter = ("account", "exchange")
+    search_fields = ("tradingsymbol",)
+    date_hierarchy = "captured_at"
+
+
+@admin.register(Alert)
+class AlertAdmin(admin.ModelAdmin):
+    list_display = ("created_at", "kind", "account", "resolved", "emailed_at")
+    list_filter = ("kind", "resolved")
+    search_fields = ("message",)
+    date_hierarchy = "created_at"

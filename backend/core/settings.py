@@ -35,6 +35,9 @@ CSRF_TRUSTED_ORIGINS = [
 # ---------- Apps ----------
 
 INSTALLED_APPS = [
+    # Daphne must come first so it overrides the runserver command with ASGI.
+    "daphne",
+
     "django.contrib.admin",
     "django.contrib.auth",
     "django.contrib.contenttypes",
@@ -43,12 +46,14 @@ INSTALLED_APPS = [
     "django.contrib.staticfiles",
 
     # Third-party
+    "channels",
     "corsheaders",
     "rest_framework",
     "knox",
 
     # Local
     "accounts",
+    "copytrading",
 ]
 
 MIDDLEWARE = [
@@ -81,6 +86,7 @@ TEMPLATES = [
 ]
 
 WSGI_APPLICATION = "core.wsgi.application"
+ASGI_APPLICATION = "core.asgi.application"
 
 
 # ---------- Database ----------
@@ -123,6 +129,54 @@ REST_KNOX = {
     "AUTO_REFRESH": True,
     "TOKEN_LIMIT_PER_USER": 10,
 }
+
+
+# ---------- Redis / Channels / Celery ----------
+
+REDIS_URL = env("REDIS_URL", default="redis://redis:6379/0")
+
+CHANNEL_LAYERS = {
+    "default": {
+        "BACKEND": "channels_redis.core.RedisChannelLayer",
+        "CONFIG": {"hosts": [REDIS_URL]},
+    },
+}
+
+CELERY_BROKER_URL = env("CELERY_BROKER_URL", default=REDIS_URL)
+CELERY_RESULT_BACKEND = env("CELERY_RESULT_BACKEND", default=REDIS_URL)
+CELERY_TASK_SERIALIZER = "json"
+CELERY_RESULT_SERIALIZER = "json"
+CELERY_ACCEPT_CONTENT = ["json"]
+# Zerodha operates in IST; schedule/market-hour logic should assume this.
+CELERY_TIMEZONE = env("CELERY_TIMEZONE", default="Asia/Kolkata")
+CELERY_ENABLE_UTC = True
+
+CELERY_BEAT_SCHEDULE = {
+    # 2-second position reconciliation between master and copy accounts.
+    "reconcile-positions-2s": {
+        "task": "copytrading.tasks.reconcile_positions",
+        "schedule": 2.0,
+    },
+}
+
+
+# ---------- Email (alerts) ----------
+
+# Defaults to console output in dev; set EMAIL_BACKEND/SMTP vars for real sends.
+EMAIL_BACKEND = env(
+    "EMAIL_BACKEND",
+    default="django.core.mail.backends.console.EmailBackend",
+)
+EMAIL_HOST = env("EMAIL_HOST", default="")
+EMAIL_PORT = env.int("EMAIL_PORT", default=587)
+EMAIL_HOST_USER = env("EMAIL_HOST_USER", default="")
+EMAIL_HOST_PASSWORD = env("EMAIL_HOST_PASSWORD", default="")
+EMAIL_USE_TLS = env.bool("EMAIL_USE_TLS", default=True)
+DEFAULT_FROM_EMAIL = env("DEFAULT_FROM_EMAIL", default="copytrading@localhost")
+# Where mismatch / failure alerts are sent.
+ALERT_EMAIL_TO = [
+    e.strip() for e in env("ALERT_EMAIL_TO", default="").split(",") if e.strip()
+]
 
 
 # ---------- I18N ----------
