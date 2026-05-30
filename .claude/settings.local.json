@@ -2,7 +2,12 @@
   "permissions": {
     "allow": [
       "Bash(python -c \"import secrets; print\\(secrets.token_urlsafe\\(50\\)\\)\")",
-      "Bash(docker compose *)"
+      "Bash(docker compose *)",
+      "Bash(git -C \"J:/code/copy_trading\" update-index --chmod=+x backend/morning.sh)",
+      "Bash(chmod +x \"J:/code/copy_trading/backend/morning.sh\")",
+      "Bash(cd \"J:/code/copy_trading/frontend\" && echo \"=== package.json ===\" && cat package.json && echo \"=== src tree ===\" && ls -R src 2>/dev/null | head -60 && echo \"=== vite.config ===\" && cat vite.config.js && echo \"=== nginx conf ===\" && cat ../nginx/nginx.conf 2>/dev/null | head -60)",
+      "Bash(curl -s -o /dev/null -w \"HTTP %{http_code}\\\\n\" http://localhost:5173/)",
+      "PowerShell($errors = $null; $tokens = $null; [System.Management.Automation.Language.Parser]::ParseFile\\(\"J:\\\\code\\\\copy_trading\\\\backend\\\\morning.ps1\", [ref]$tokens, [ref]$errors\\) | Out-Null; if \\($errors\\) { $errors | ForEach-Object { $_.Message } } else { \"morning.ps1: parse OK\" })"
     ]
   }
 }

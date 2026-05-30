@@ -15,6 +15,7 @@ async function onLogout() {
       <v-app-bar-title>Core</v-app-bar-title>
       <v-spacer />
       <template v-if="auth.isAuthenticated">
+        <v-btn :to="{ name: 'dashboard' }">Dashboard</v-btn>
         <v-btn :to="{ name: 'profile' }" :exact="true">Profile</v-btn>
         <v-btn @click="onLogout">Logout</v-btn>
       </template>

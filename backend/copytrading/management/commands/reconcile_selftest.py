@@ -89,11 +89,16 @@ class Command(BaseCommand):
             with override_settings(**common), patch.object(recon, "get_client", fake_get_client):
                 return recon.reconcile()
 
+        # Scope all assertions to THIS mapping's dedup key so pre-existing real
+        # mismatch alerts in the DB don't pollute the counts.
+        dedup_key = f"recon:{mapping.id}:NFO:NIFTY24JUNFUT"
+        scoped = lambda **kw: Alert.objects.filter(dedup_key=dedup_key, **kw)  # noqa: E731
+
         # 1) Mismatch: master 50, copy 0 -> expected 50 != 0
         out.write(style.MIGRATE_HEADING("\n[1] Mismatch case (master 50, copy 0):"))
         summary = run_with(0)
         out.write(f"    summary: {summary}")
-        a = Alert.objects.filter(kind=AlertKind.MISMATCH, resolved=False).first()
+        a = scoped(resolved=False).first()
         out.write(style.SUCCESS(f"    alert created: {a.message}") if a
                   else style.ERROR("    FAIL: no mismatch alert"))
 
@@ -101,7 +106,7 @@ class Command(BaseCommand):
         out.write(style.MIGRATE_HEADING("\n[2] Dedup (second tick, still mismatched):"))
         run_with(0)
         a.refresh_from_db()
-        n = Alert.objects.filter(kind=AlertKind.MISMATCH).count()
+        n = scoped().count()
         out.write(style.SUCCESS(f"    same alert reused, count={a.count}, total rows={n}")
                   if a.count == 2 and n == 1 else style.ERROR(f"    FAIL: count={a.count} rows={n}"))
 

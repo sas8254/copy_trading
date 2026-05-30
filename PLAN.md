@@ -103,3 +103,8 @@ Future brokers (Angel One, Tradebulls, Groww) implement the same interface.
 - [x] Dashboard: DashboardConsumer (ws/dashboard/) sends a state snapshot on
       connect then streams reconcile/alert/copy_order/ticker events; served at
       /dashboard/ (self-contained template, no frontend build). Verified live.
+- [x] SPA frontend: DRF overview API (/api/copytrading/overview/, Knox auth) +
+      resolve-alert endpoint; Vue/Vuetify DashboardView (accounts, mappings,
+      alerts w/ resolve, copy orders, live event log) that fetches overview and
+      live-updates over ws/dashboard/. Route + nav added; nginx /ws/ proxy added.
+      SPA build verified; dev server live on :5173.
