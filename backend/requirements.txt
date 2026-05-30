@@ -16,8 +16,13 @@ daphne~=4.1
 celery~=5.4
 redis~=5.0
 
-# Broker
-# NOTE: kiteconnect 5.0.0 hard-pins autobahn==19.11.2, which has no wheel for
-# Python 3.12 and breaks the build. It is only needed for the Zerodha step, so
-# it is added there with a resolved version. Do not re-add a bare `kiteconnect`.
-# kiteconnect~=5.0
+# Broker (Zerodha)
+# kiteconnect hard-pins autobahn==19.11.2, which conflicts with daphne's
+# autobahn>=22. We only use its REST client (kiteconnect.connect.KiteConnect),
+# which needs requests/dateutil, NOT autobahn. So kiteconnect itself is
+# installed with --no-deps in the Dockerfile; its REST deps are listed here.
+requests~=2.32
+python-dateutil~=2.9
+six~=1.16
+# Used later for the Kite Ticker websocket (avoids autobahn entirely).
+websocket-client~=1.8

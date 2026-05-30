@@ -195,6 +195,41 @@ class PositionSnapshot(models.Model):
         return f"{self.account.label} {self.tradingsymbol}: {self.net_quantity}"
 
 
+class Instrument(models.Model):
+    """Cached instrument metadata (lot size, tick size) synced from the broker.
+
+    Populated by `manage.py kite_sync_instruments`. Used to round
+    master_qty x multiplier to a valid lot for both reconciliation and order
+    placement.
+    """
+
+    broker = models.CharField(max_length=20, choices=Broker.choices, default=Broker.ZERODHA)
+    exchange = models.CharField(max_length=10)
+    tradingsymbol = models.CharField(max_length=50)
+    instrument_token = models.BigIntegerField(null=True, blank=True)
+    name = models.CharField(max_length=100, blank=True)
+    lot_size = models.PositiveIntegerField(default=1)
+    tick_size = models.DecimalField(max_digits=10, decimal_places=4, default=0)
+    instrument_type = models.CharField(max_length=10, blank=True, help_text="FUT/CE/PE/EQ")
+    segment = models.CharField(max_length=20, blank=True)
+    expiry = models.DateField(null=True, blank=True)
+    synced_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["broker", "exchange", "tradingsymbol"],
+                name="uniq_instrument",
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["exchange", "tradingsymbol"]),
+        ]
+
+    def __str__(self):
+        return f"{self.exchange}:{self.tradingsymbol} (lot {self.lot_size})"
+
+
 class AlertKind(models.TextChoices):
     MISMATCH = "mismatch", "Position mismatch"
     ORDER_FAILED = "order_failed", "Copy order failed"
@@ -203,19 +238,30 @@ class AlertKind(models.TextChoices):
 
 
 class Alert(models.Model):
-    """An event requiring user attention; may be emailed."""
+    """An event requiring user attention; may be emailed.
+
+    `dedup_key` collapses the same recurring condition (e.g. a mismatch on one
+    instrument) into a single row so the 2s loop does not spam emails. `count`
+    and `last_seen_at` track recurrence.
+    """
 
     kind = models.CharField(max_length=20, choices=AlertKind.choices)
     account = models.ForeignKey(
         BrokerAccount, on_delete=models.SET_NULL, null=True, blank=True, related_name="alerts"
     )
     message = models.TextField()
+    dedup_key = models.CharField(max_length=200, blank=True, db_index=True)
+    count = models.PositiveIntegerField(default=1)
     resolved = models.BooleanField(default=False)
     emailed_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
+    last_seen_at = models.DateTimeField(auto_now=True)
 
     class Meta:
-        ordering = ["-created_at"]
+        ordering = ["-last_seen_at"]
+        indexes = [
+            models.Index(fields=["kind", "dedup_key", "resolved"]),
+        ]
 
     def __str__(self):
         return f"[{self.get_kind_display()}] {self.message[:50]}"

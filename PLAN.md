@@ -80,7 +80,13 @@ Future brokers (Angel One, Tradebulls, Groww) implement the same interface.
 - [x] Data model + admin (BrokerAccount, CopyMapping, Trade, CopyOrder,
       PositionSnapshot, Alert) — migration 0001 applied 2026-05-30; creds plain
       DB fields for now (encrypt later)
-- [ ] Zerodha adapter (login + REST + Ticker PoC)
+- [x] Zerodha adapter (REST): BrokerClient interface + ZerodhaClient + factory;
+      kite_login / kite_positions management commands. kiteconnect 5.2.0 installed
+      --no-deps in Dockerfile (its autobahn==19.11.2 pin conflicts with daphne;
+      we use REST only, ticker handled separately). Verified in fresh build.
 - [ ] Dispatcher + place_copy_order task (retry/backoff)
-- [ ] reconcile_positions (real logic) + email alerts
+- [x] reconcile_positions (real logic) + email alerts: Instrument lot-size cache
+      (kite_sync_instruments) + round_to_lot, IST market-hours guard, reconcile
+      service (master vs copy per multiplier), deduped Alerts with email cooldown
+      + Channels broadcast, auto-resolve on match. Verified via 2s Beat loop.
 - [ ] Dashboard consumer + frontend live view

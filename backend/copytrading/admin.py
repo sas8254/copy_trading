@@ -5,6 +5,7 @@ from .models import (
     BrokerAccount,
     CopyMapping,
     CopyOrder,
+    Instrument,
     PositionSnapshot,
     Trade,
 )
@@ -74,9 +75,16 @@ class PositionSnapshotAdmin(admin.ModelAdmin):
     date_hierarchy = "captured_at"
 
 
+@admin.register(Instrument)
+class InstrumentAdmin(admin.ModelAdmin):
+    list_display = ("tradingsymbol", "exchange", "lot_size", "instrument_type", "expiry")
+    list_filter = ("exchange", "instrument_type")
+    search_fields = ("tradingsymbol", "name")
+
+
 @admin.register(Alert)
 class AlertAdmin(admin.ModelAdmin):
-    list_display = ("created_at", "kind", "account", "resolved", "emailed_at")
+    list_display = ("last_seen_at", "kind", "account", "count", "resolved", "emailed_at")
     list_filter = ("kind", "resolved")
-    search_fields = ("message",)
+    search_fields = ("message", "dedup_key")
     date_hierarchy = "created_at"

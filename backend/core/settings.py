@@ -160,6 +160,17 @@ CELERY_BEAT_SCHEDULE = {
 }
 
 
+# ---------- Copy trading ----------
+
+# Bypass the IST market-hours guard (for testing the loop off-hours).
+COPYTRADING_FORCE_MARKET_OPEN = env.bool("COPYTRADING_FORCE_MARKET_OPEN", default=False)
+# Re-send an email for the same unresolved alert at most once per this many
+# seconds (the 2s loop would otherwise spam).
+COPYTRADING_ALERT_EMAIL_COOLDOWN = env.int(
+    "COPYTRADING_ALERT_EMAIL_COOLDOWN", default=900
+)
+
+
 # ---------- Email (alerts) ----------
 
 # Defaults to console output in dev; set EMAIL_BACKEND/SMTP vars for real sends.

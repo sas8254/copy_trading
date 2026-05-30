@@ -21,6 +21,10 @@ WORKDIR /app
 
 COPY requirements.txt .
 RUN pip install -r requirements.txt
+# Install the Zerodha SDK without its deps: it pins autobahn==19.11.2 which
+# conflicts with daphne's autobahn. We only use the REST client; its real
+# runtime deps (requests, python-dateutil, six) are in requirements.txt.
+RUN pip install --no-deps kiteconnect==5.2.0
 
 COPY . .
 

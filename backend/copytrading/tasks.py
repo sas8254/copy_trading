@@ -23,9 +23,12 @@ def ping():
 def reconcile_positions():
     """Compare master vs copy positions every 2s; alert on mismatch.
 
-    Stub for now — just confirms Celery Beat is firing on schedule. The real
-    implementation will fetch positions per BrokerAccount, apply each
-    CopyMapping multiplier, and email an Alert when they diverge.
+    Skips fast outside market hours. Read-only against the brokers.
     """
-    logger.debug("copytrading.reconcile_positions: tick (stub, no accounts yet)")
-    return "ok"
+    from .services.reconcile import reconcile
+
+    try:
+        return reconcile()
+    except Exception:  # noqa: BLE001 - never let the beat task die
+        logger.exception("reconcile_positions failed")
+        return {"error": "exception"}
