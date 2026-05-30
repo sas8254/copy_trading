@@ -32,6 +32,9 @@ class BrokerAccount(models.Model):
     token_updated_at = models.DateTimeField(null=True, blank=True)
 
     active = models.BooleanField(default=True)
+    # Master only: copy orders that complete at/after this instant. Set to "now"
+    # on first detection so pre-existing orders are not replayed on startup.
+    copy_orders_since = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -108,8 +111,10 @@ class Trade(models.Model):
     side = models.CharField(max_length=4, choices=Side.choices)
     quantity = models.IntegerField()
     price = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True)
+    trigger_price = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True)
     product = models.CharField(max_length=10, blank=True, help_text="MIS/NRML/CNC")
     order_type = models.CharField(max_length=10, blank=True, help_text="MARKET/LIMIT/SL/SL-M")
+    variety = models.CharField(max_length=15, blank=True, default="regular")
 
     broker_order_id = models.CharField(max_length=64, blank=True)
     status = models.CharField(max_length=30, blank=True)
@@ -139,6 +144,7 @@ class CopyOrderStatus(models.TextChoices):
     PLACED = "placed", "Placed"
     FAILED = "failed", "Failed"
     SKIPPED = "skipped", "Skipped"
+    SIMULATED = "simulated", "Simulated (dry-run)"
 
 
 class ErrorKind(models.TextChoices):
@@ -156,6 +162,7 @@ class CopyOrder(models.Model):
     status = models.CharField(
         max_length=10, choices=CopyOrderStatus.choices, default=CopyOrderStatus.PENDING
     )
+    is_dry_run = models.BooleanField(default=False)
     attempts = models.PositiveIntegerField(default=0)
 
     broker_order_id = models.CharField(max_length=64, blank=True)
@@ -168,6 +175,9 @@ class CopyOrder(models.Model):
 
     class Meta:
         ordering = ["-created_at"]
+        constraints = [
+            models.UniqueConstraint(fields=["trade", "mapping"], name="uniq_trade_mapping"),
+        ]
 
     def __str__(self):
         return f"CopyOrder {self.computed_quantity} -> {self.mapping.copy.label} [{self.status}]"

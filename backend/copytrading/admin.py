@@ -60,10 +60,12 @@ class CopyOrderAdmin(admin.ModelAdmin):
         "mapping",
         "computed_quantity",
         "status",
+        "is_dry_run",
         "attempts",
         "error_kind",
+        "broker_order_id",
     )
-    list_filter = ("status", "error_kind")
+    list_filter = ("status", "is_dry_run", "error_kind")
     search_fields = ("broker_order_id", "error_code")
 
 

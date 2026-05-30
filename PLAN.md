@@ -84,9 +84,22 @@ Future brokers (Angel One, Tradebulls, Groww) implement the same interface.
       kite_login / kite_positions management commands. kiteconnect 5.2.0 installed
       --no-deps in Dockerfile (its autobahn==19.11.2 pin conflicts with daphne;
       we use REST only, ticker handled separately). Verified in fresh build.
-- [ ] Dispatcher + place_copy_order task (retry/backoff)
+- [x] Dispatcher: order-event detection (poll_master_orders, baseline watermark
+      so startup positions aren't replayed) -> dispatch_trade fan-out per mapping
+      (lot rounding, zero-qty policy) -> place_copy_order task (mirrors master
+      type/price, transient retry w/ backoff, terminal->fail+alert). Global
+      COPYTRADING_LIVE_ORDERS dry-run switch (default False). Verified via
+      dispatch_selftest (dry-run/live/terminal/zero-qty all pass).
 - [x] reconcile_positions (real logic) + email alerts: Instrument lot-size cache
       (kite_sync_instruments) + round_to_lot, IST market-hours guard, reconcile
       service (master vs copy per multiplier), deduped Alerts with email cooldown
       + Channels broadcast, auto-resolve on match. Verified via 2s Beat loop.
-- [ ] Dashboard consumer + frontend live view
+- [x] Live ticker: kite_ticker management command + container; one
+      websocket-client connection per master to wss://ws.kite.trade, listens for
+      order updates -> handle_ticker_order -> instant dispatch (REST poll stays
+      as fallback). Backoff + deduped alert on auth failure. NOTE: Kite streaming
+      requires the paid WS add-on on the MASTER account only; copy accounts need
+      REST only. Verified connected with mom_zerodha streaming enabled.
+- [x] Dashboard: DashboardConsumer (ws/dashboard/) sends a state snapshot on
+      connect then streams reconcile/alert/copy_order/ticker events; served at
+      /dashboard/ (self-contained template, no frontend build). Verified live.

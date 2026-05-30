@@ -152,6 +152,11 @@ CELERY_TIMEZONE = env("CELERY_TIMEZONE", default="Asia/Kolkata")
 CELERY_ENABLE_UTC = True
 
 CELERY_BEAT_SCHEDULE = {
+    # Poll master accounts for new completed orders to copy.
+    "poll-master-orders": {
+        "task": "copytrading.tasks.poll_master_orders",
+        "schedule": 2.0,
+    },
     # 2-second position reconciliation between master and copy accounts.
     "reconcile-positions-2s": {
         "task": "copytrading.tasks.reconcile_positions",
@@ -169,6 +174,13 @@ COPYTRADING_FORCE_MARKET_OPEN = env.bool("COPYTRADING_FORCE_MARKET_OPEN", defaul
 COPYTRADING_ALERT_EMAIL_COOLDOWN = env.int(
     "COPYTRADING_ALERT_EMAIL_COOLDOWN", default=900
 )
+
+# MASTER SWITCH for placing real copy orders. Default False = dry-run: copy
+# orders are computed and recorded as "simulated" but never sent to the broker.
+# Set to True in .env only when you are ready to trade real money.
+COPYTRADING_LIVE_ORDERS = env.bool("COPYTRADING_LIVE_ORDERS", default=False)
+# Max retries for a copy order on transient (network/5xx) failures.
+COPYTRADING_COPY_MAX_RETRIES = env.int("COPYTRADING_COPY_MAX_RETRIES", default=3)
 
 
 # ---------- Email (alerts) ----------
