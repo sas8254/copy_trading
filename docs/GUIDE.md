@@ -1,286 +1,249 @@
 # Copy Trading — Complete Guide
 
-A detailed explanation of what this project is, how every piece fits together,
-how to operate it, and what each setting controls.
+What this project is, how the pieces fit together, how to use it, and what each
+setting does.
 
-> Quick daily commands? See [CHEATSHEET.md](./CHEATSHEET.md).
-> Design history / decisions? See [../PLAN.md](../PLAN.md).
+> Daily steps on one page: [CHEATSHEET.md](./CHEATSHEET.md).
+> Design history: [../PLAN.md](../PLAN.md).
 
 ---
 
 ## 1. What this project does
 
-It **automatically mirrors trades** from one Zerodha account (the **master**)
-onto one or more other Zerodha accounts (the **copies**), scaled by a per-account
-**multiplier**, and it **watches positions every 2 seconds** to email you if a
-copy account ever drifts out of sync.
+It **automatically copies trades** from one Zerodha account (the **master**)
+to one or more other Zerodha accounts (the **copies**). Each copy account has its
+own **multiplier**. Every 2 seconds the app also **compares positions** and alerts
+you if a copy account drifts out of sync.
 
-Concretely:
+- An order fills in the master account.
+- Within about 2 seconds (or almost instantly via the live feed), the app places the
+  same order on each copy account, with quantity `master_qty × multiplier`
+  rounded down to whole F&O lots.
+- A separate watchdog compares open positions. If a copy doesn't match what the
+  multiplier says it should, you get an **alert** (on the website and by email).
 
-- You place an order on `mom_zerodha` (master).
-- Within ~2 seconds (or instantly via the live WebSocket), the system places a
-  matching order on `my_zerodha` (copy), with quantity
-  `master_qty × multiplier`, rounded to a valid F&O lot.
-- A separate watchdog continuously compares the two accounts' open positions. If
-  they don't match what the multiplier says they should, it raises an **alert**
-  (email + dashboard) so you can intervene.
+Everything is done from the website: accounts, the daily Zerodha login, switching the
+master, positions, orders, the live/dry-run switch and alert emails.
 
 ---
 
 ## 2. The big picture (architecture)
 
-The backend runs as **7 Docker containers**:
-
 | Container | What it is | Why it exists |
 |---|---|---|
-| `db` | PostgreSQL | Stores accounts, trades, copy orders, alerts, instruments |
-| `redis` | Redis | Message queue for Celery **and** the channel layer for WebSockets |
-| `web` | Django served by **Daphne** | REST API, admin, and **WebSockets** (Daphne is ASGI — gunicorn can't do WebSockets) |
-| `celery_worker` | Celery worker | Does the work: places copy orders, runs retries |
-| `celery_beat` | Celery scheduler | Fires two jobs every 2s: poll master orders + reconcile positions |
-| `kite_ticker` | Long-running process | Holds a live WebSocket to Zerodha for instant order detection |
-| (frontend) | Vue/Vite dev server | The browser dashboard (separate compose stack on :5173) |
+| `db` | PostgreSQL | Stores accounts, settings, trades, copy orders, alerts, lot sizes |
+| `redis` | Redis | Message queue for Celery **and** the channel layer for live updates |
+| `web` | Django served by **Daphne** | REST API, admin, and live-update WebSockets |
+| `celery_worker` | Celery worker | Places copy orders, runs retries, syncs lot sizes |
+| `celery_beat` | Celery scheduler | Every 2s: poll master orders + reconcile positions. Weekdays 9:00: sync lot sizes |
+| `kite_ticker` | Long-running process | Live WebSocket to Zerodha for instant order detection |
+| frontend | Vue + Vuetify (Vite) | The website (separate compose stack on :5173) |
 
-**Why so many pieces?** A web request can't run forever, but copy trading needs
-background loops and long-lived connections:
-
-- **Celery Beat** is the clock (fires tasks on a schedule).
-- **Celery Worker** is the muscle (executes tasks + order placement with retries).
-- **Redis** is the conveyor belt between them.
-- **Daphne + Channels** push live updates to the browser.
-- **kite_ticker** keeps one always-on socket to the broker.
+The worker and the ticker re-read accounts and settings from the database, so a
+login, a master switch or a mode change from the website takes effect without restarts.
 
 ---
 
 ## 3. The data model
 
-All in the `copytrading` Django app, editable at `/admin/`:
-
 | Model | Meaning |
 |---|---|
-| **BrokerAccount** | A Zerodha login. `role` = **master** or **copy**, plus `api_key`, `api_secret`, daily `access_token`. |
-| **CopyMapping** | "Copy from *this master* to *this copy*, with *this multiplier*." Holds the zero-qty policy. |
-| **Trade** | A completed order observed on the master (deduped by broker order id). |
-| **CopyOrder** | The attempt to mirror one Trade onto one copy account. Tracks status, attempts, error, broker order id. |
-| **Instrument** | Cached lot/tick sizes for F&O contracts, synced from Zerodha. Needed for lot rounding. |
-| **PositionSnapshot** | A position recorded when a mismatch is detected (evidence). |
-| **Alert** | Something needing attention: mismatch, failed order, zero-qty skip, expired token. Deduped + email-rate-limited. |
+| **BrokerAccount** | A Zerodha login. `role` = **master** (only one at a time) or **copy**. Holds the Kite API key, the API secret and the daily access token (both **encrypted** in the DB), plus the copy settings `multiplier` and `zero_qty_policy`. |
+| **AppSettings** | Single row: the copy **mode** (`off` / `dry_run` / `live`) and the alert email recipients. |
+| **Trade** | A filled order seen on the master (deduped by Zerodha order ID). |
+| **CopyOrder** | The attempt to copy one Trade to one copy account: status, attempts, error, Zerodha order ID. |
+| **Instrument** | Cached lot sizes for F&O contracts (NFO + BFO), used for lot rounding. |
+| **Alert** | Something needing attention: mismatch, failed order, zero-qty skip, login needed. Deduped, and emails are rate-limited. |
 
 ---
 
 ## 4. The lifecycle of one copy trade
 
+Every 2 seconds (during market hours) one **pass** of the copy engine
+(`services/sync.py`) runs:
+
 ```
-1. Order COMPLETES on mom_zerodha
-        │
-        ├─ (fast path) kite_ticker WebSocket receives an "order" message  ──┐
-        └─ (fallback)  celery_beat poll_master_orders runs every 2s        ──┤
-                                                                            ▼
-2. detect.process_order(): is it new? after the startup baseline?  → create a Trade
+1. Read the master's orders from Zerodha (or right away, if the instant feed is on)
         │
         ▼
-3. dispatch_trade(): for each active CopyMapping on this master:
-        - qty = round_down_to_lot(master_qty × multiplier)
-        - if qty == 0 → apply zero-qty policy (skip + alert)
-        - create a CopyOrder, enqueue place_copy_order
+2. New order after the baseline? → create a Trade
+        - "When filled": once the order has filled (or was cancelled after a part-fill)
+        - "Mirror": as soon as it is OPEN / TRIGGER PENDING
+   Existing order? → update its price / qty / status / filled qty
         │
         ▼
-4. place_copy_order():
-        - DRY-RUN (default) → record as "simulated", touch nothing
-        - LIVE → place real order on my_zerodha, mirroring master's type/price
-              - transient failure (network/5xx) → retry with backoff (2,4,8s…)
-              - terminal failure (margin/RMS)   → mark "failed" + email alert
-              - success → store broker order id, status "placed"
-
-Meanwhile, every 2s independently:
-   reconcile(): compare master vs copy net positions × multiplier
-        - match    → auto-resolve any open mismatch alert
-        - mismatch → raise/refresh an alert (email + dashboard)
+3. Place the copy on each enabled copy account
+        qty = round_down_to_lot(master_qty × multiplier), zero-qty policy applies
+        - When filled: LIMIT at the master's average fill price; MARKET/SL/SL-M → MARKET
+        - Mirror: same type, limit price and trigger as the master
+        - Dry run → "simulated", never sent to Zerodha
+        │
+        ▼
+4. Mirror only, while the master's order is open:
+        master modified → modify the copy;  master cancelled → cancel the copy
+        │
+        ▼
+5. Final check, once the master's order is done:
+        copy still open  → wait the grace period (15s), then cancel the rest
+        copy filled less → buy/sell the gap at MARKET ("top-up")
+        copy filled more → alert (never auto-exited)
+        copy rejected    → alert
 ```
 
-Two design choices baked in:
+Meanwhile, every 2s (live mode only), **reconcile** compares master vs copy net
+positions × multiplier. Symbols with orders still in progress are skipped
+until their final check is done.
 
-- **The startup baseline.** When the system first starts watching a master, it
-  records "now" and ignores all pre-existing orders — otherwise it would replay
-  your entire order history on boot. So positions already open when you start are
-  **not** auto-copied; they show as mismatches for you to handle. Only orders
-  placed *after* startup get copied. (Clear `BrokerAccount.copy_orders_since` to
-  re-baseline.)
-- **Detection and reconciliation are separate.** Detection copies new trades
-  fast. Reconciliation is a safety net that catches anything detection missed (a
-  missed order, a manual trade on the copy, a partial fill) and alerts you — it
-  never places orders itself.
+**The baseline.** The master's `copy_orders_since` is set to "now" whenever an
+account becomes master, logs in to Zerodha, or copying is turned back on after
+being off. Orders before that are never copied, so nothing is replayed late.
 
----
+**Self-healing.** Each pass works from the current state of both accounts, so
+if a step fails (network blip), the next pass simply tries again. Passes never
+overlap (a database lock), and every copy is recorded once per trade, account and kind.
+
+### When filled vs Mirror
+
+| | When filled (default) | Mirror |
+|---|---|---|
+| Copy placed | After the master's order fills | As soon as the master's order is open |
+| Copy's price | Master's fill price (LIMIT) or MARKET | Same limit price / trigger as the master |
+| Master modifies | n/a | Copy modified the same way |
+| Master cancels | Nothing to do (unless part-filled) | Copy cancelled |
+| Best for | Simplicity | Same entry price, working stop-losses |
+| Risk | Slightly worse price in fast markets | Copy can fill when the master doesn't → alert |
 
 ## 5. First-time setup
 
 ### Prerequisites
 - Docker Desktop running.
-- A Zerodha **Kite Connect** app (api_key + api_secret from developers.kite.trade).
-- The **streaming/WebSocket add-on** activated on the **master** account only
-  (paid Kite Connect feature; copy accounts need REST only).
+- A **Kite Connect** app for each Zerodha account (developers.kite.trade). Each
+  app gives an API key and an API secret.
+- The **streaming add-on** on the master's app for the instant path (copy
+  accounts don't need it; without it, copying falls back to 2s polling).
 
 ### Steps
-1. **Start the stack:**
-   ```bash
-   cd backend
-   docker compose up -d
-   ```
-2. **Create accounts** at `/admin/copytrading/brokeraccount/`:
-   - One role **master** (e.g. `mom_zerodha`) with `api_key` + `api_secret`.
-   - One role **copy** (e.g. `my_zerodha`) with its `api_key` + `api_secret`.
-3. **Create a CopyMapping** (`/admin/copytrading/copymapping/`): master → copy,
-   `multiplier` (start with `1`), and a zero-qty policy.
-4. **Log in both accounts:**
-   ```bash
-   docker compose exec web python manage.py kite_login --account "mom_zerodha"
-   # open the URL, log in, copy ?request_token=XXXX from the redirect
-   docker compose exec web python manage.py kite_login --account "mom_zerodha" --request-token XXXX
-   # repeat for my_zerodha
-   ```
-5. **Sync lot sizes** (daily, F&O):
-   ```bash
-   docker compose exec web python manage.py kite_sync_instruments --account "mom_zerodha"
-   ```
-6. **Check readiness:**
-   ```bash
-   docker compose exec web python manage.py preflight
-   ```
-   Fix anything marked `[FAIL]` until it says **GO**.
-7. **Watch it live:** `http://localhost:5173/dashboard` (SPA login) or
-   `http://localhost:8000/dashboard/`.
-
-It stays in **dry-run** until you flip `COPYTRADING_LIVE_ORDERS=True`.
+1. **Start everything** (see the main README): `backend/start.sh` and `frontend/start.sh`.
+2. Open **http://localhost:5173** and sign in with the superuser from
+   `backend/.env` (`DJANGO_SUPERUSER_*`).
+3. In each Kite Connect app on developers.kite.trade, set the **Redirect URL** to
+   `http://localhost:5173/kite/callback`. The Accounts page shows the exact URL.
+4. **Accounts → Add account** for the master: name, API key and API secret. The
+   first account automatically becomes the master.
+5. **Add account** for each copy account, with its multiplier (start with `1`).
+6. Click **Login to Zerodha** on each account.
+7. **Home** shows a readiness checklist. Fix anything red.
+8. Copying starts in **Dry run**. Watch a few simulated copies on **Orders**, then
+   switch to **Live** on **Settings**.
 
 ---
 
 ## 6. Daily use
 
-Tokens expire ~6 AM IST. Each trading morning run one of:
+Zerodha logins expire around 6 AM IST. Each trading morning:
 
-```bash
-cd backend
-bash morning.sh        # macOS/Linux/Git-Bash
-```
-```powershell
-cd backend
-.\morning.ps1          # Windows PowerShell
-```
+1. Open the website. Home shows "Log in to Zerodha" if any account needs it.
+2. On **Accounts**, click **Login to Zerodha** on each account.
 
-These log in both accounts, sync instruments, restart ticker + workers, and run
-preflight.
+That's all. Lot sizes sync automatically after the master logs in, and nothing needs
+restarting.
+
+> If you're already logged in to kite.zerodha.com as a different user, Zerodha may
+> log you in as that user. Log out there first. If an account has a Zerodha user
+> ID set, the app rejects a login as the wrong user.
 
 ### Going live (real money)
-1. `docker compose exec web python manage.py preflight` → must be **GO**.
-2. Set `COPYTRADING_LIVE_ORDERS=True` in `backend/.env`.
-3. `docker compose up -d && docker compose restart celery_worker`.
-4. **Start small** — low multiplier, one cheap instrument.
+1. Home's checklist is all green.
+2. **Settings → Copying → Live** and confirm.
+3. **Start small**: a low multiplier and one cheap instrument.
+
+**Emergency stop:** **Settings → Copying → Off**. This takes effect immediately, even
+for copies that are already queued.
 
 ---
 
 ## 7. Every setting explained
 
-### `backend/.env` — Django core
-| Setting | What it does |
-|---|---|
-| `DJANGO_SECRET_KEY` | Crypto key for sessions/CSRF. Secret, unique per env. |
-| `DJANGO_DEBUG` | `True` in dev (verbose errors); `False` in production. |
-| `DJANGO_ALLOWED_HOSTS` | Hostnames Django will serve (comma-separated). |
-| `DJANGO_CORS_ALLOWED_ORIGINS` | Browser origins allowed to call the API. |
-| `DJANGO_CSRF_TRUSTED_ORIGINS` | Origins trusted for form/admin POSTs. |
-| `POSTGRES_*` | DB name/user/password/host/port. |
-| `DJANGO_SUPERUSER_*` | Used by `start.sh` to bootstrap the admin user. |
-
-### Redis / Celery / Channels
-| Setting | What it does |
-|---|---|
-| `REDIS_URL` | Redis location; also the Channels (WebSocket) backend. |
-| `CELERY_BROKER_URL` | Queue Celery reads jobs from. |
-| `CELERY_RESULT_BACKEND` | Where Celery stores task results. |
-| `CELERY_TIMEZONE` | `Asia/Kolkata` — schedules/market logic think in IST. |
-
-### Email (alerts)
-| Setting | What it does |
-|---|---|
-| `EMAIL_BACKEND` | Blank → prints emails to logs (dev). `...smtp.EmailBackend` → real sending. |
-| `EMAIL_HOST` / `EMAIL_PORT` | SMTP server, e.g. `smtp.gmail.com` / `587`. |
-| `EMAIL_HOST_USER` / `EMAIL_HOST_PASSWORD` | SMTP login. Gmail needs an **App Password**. |
-| `EMAIL_USE_TLS` | `True` for port 587 (STARTTLS). |
-| `DEFAULT_FROM_EMAIL` | "From" address on alert emails. |
-| `ALERT_EMAIL_TO` | Comma-separated alert recipients. Empty = no emails. |
-
-### Zerodha
-| Setting | What it does |
-|---|---|
-| `KITE_API_KEY` / `KITE_API_SECRET` | Optional fallback defaults; real creds live per-account in the admin. |
-
-### Copy-trading runtime (the important ones)
-| Setting | Default | What it does |
+### On the website
+| Where | Setting | What it does |
 |---|---|---|
-| **`COPYTRADING_LIVE_ORDERS`** | `False` | Master safety switch. `False` = dry-run (copies `simulated`, nothing sent). `True` = real orders. |
-| **`COPYTRADING_FORCE_MARKET_OPEN`** | `False` | Bypass the IST market-hours guard. `True` for off-hours testing. Keep `False` normally. |
-| **`COPYTRADING_COPY_MAX_RETRIES`** | `3` | Retries for a copy order on *transient* failures. Margin/RMS = terminal, never retried. |
-| **`COPYTRADING_ALERT_EMAIL_COOLDOWN`** | `900` | Min seconds between re-emailing the same unresolved alert (dashboard still updates every tick). |
+| Settings | **Copying** | `Off` = copy nothing. `Dry run` = record simulated copies only. `Live` = real orders. |
+| Settings | **Copy style** | *When filled* (copy after the master fills) or *Mirror* (copy when placed, follow changes/cancel). See section 4. |
+| Settings | **Instant copy feed** | Off (default) = master orders checked every 2s. On = Zerodha's live WebSocket; needs the paid streaming add-on. |
+| Settings | **Alert emails** | Who receives alerts. Use **Send test email** to check SMTP. |
+| Accounts | **Make master** | Moves the master role; the old master becomes a copy account. |
+| Accounts | **Multiplier** | Copy qty = `master_qty × multiplier`, rounded down to whole lots. |
+| Accounts | **If quantity rounds to 0 lots** | Skip + alert (default), skip silently, or round up to 1 lot. |
+| Accounts | **Enabled** | Disabled accounts are ignored completely. |
+| Accounts | **Zerodha user ID** | Optional. Guards against logging in as the wrong user. |
+
+### `backend/.env` (server-level, rarely changed)
+| Setting | What it does |
+|---|---|
+| `DJANGO_SECRET_KEY` | Crypto key for sessions/CSRF. Secret, unique per environment. |
+| `DJANGO_DEBUG` | `True` in dev; `False` in production. |
+| `DJANGO_ALLOWED_HOSTS` / `DJANGO_CORS_ALLOWED_ORIGINS` / `DJANGO_CSRF_TRUSTED_ORIGINS` | Which hosts/origins may use the backend. |
+| `POSTGRES_*` | Database connection. |
+| `DJANGO_SUPERUSER_*` | Website login created by `start.sh`. |
+| `REDIS_URL`, `CELERY_*` | Queue / live-update plumbing. `CELERY_TIMEZONE=Asia/Kolkata`. |
+| `EMAIL_*`, `DEFAULT_FROM_EMAIL` | SMTP for alert emails. Gmail needs an **App Password**. Leave `EMAIL_BACKEND` unset to print emails to the logs instead. |
+| `FIELD_ENCRYPTION_KEY` | Encrypts API secrets and tokens in the DB. Blank = derived from `DJANGO_SECRET_KEY`. If it changes, re-enter API secrets and log in again. |
+| `COPYTRADING_FILL_GRACE_SECONDS` | After the master fills, how long a copy may keep waiting at its own price before the rest is bought at market (default 15). |
+| `COPYTRADING_COPY_MAX_RETRIES` | Retries on *transient* failures (default 3). Margin/RMS errors are never retried. |
+| `COPYTRADING_ALERT_EMAIL_COOLDOWN` | Minimum seconds between re-emails of the same open alert (default 900). |
+| `COPYTRADING_FORCE_MARKET_OPEN` | **Testing only.** Runs the loops outside 9:15–15:30 IST. |
 
 ### `frontend/.env`
 | Setting | What it does |
 |---|---|
-| `VITE_API_BASE_URL` | Where the SPA sends API calls. |
-| `VITE_WS_BASE_URL` | Optional dashboard WebSocket override; else derived from the API URL. |
-
-### Per-account settings (admin, not `.env`)
-| Field | What it does |
-|---|---|
-| **BrokerAccount.role** | `master` (source) or `copy` (receiver). |
-| **BrokerAccount.active** | Unchecked → account skipped entirely. |
-| **BrokerAccount.copy_orders_since** | Startup baseline; orders before it aren't copied. Clear to re-baseline. |
-| **CopyMapping.multiplier** | Copy qty = `master_qty × multiplier`, rounded down to a lot. |
-| **CopyMapping.zero_qty_policy** | When rounding gives 0 lots: `skip_alert` (default), `skip_silent`, or `round_up` (force 1 lot). |
-| **CopyMapping.active** | Turn one master→copy link on/off. |
+| `VITE_API_BASE_URL` | Where the website sends API calls. |
+| `VITE_WS_BASE_URL` | Optional live-update WebSocket override; otherwise derived from the API URL. |
 
 ---
 
-## 8. Management commands
+## 8. Website pages
 
-Run with `docker compose exec web python manage.py <command>`.
+| Page | What's there |
+|---|---|
+| **Home** | Copy mode, market open/closed, readiness checklist, open alerts, recent orders. Updates live. |
+| **Accounts** | Add/edit/disable/delete accounts, Zerodha login, make master. |
+| **Positions** | Master's positions with P&L, and for each copy account: master qty → expected → actual, with mismatches highlighted. Auto-refreshes every 10s. |
+| **Orders** | Every master order the app saw (status, filled/qty), with each copy's live state: open, filled, part-filled, cancelled, top-up, how often it was modified, and errors. |
+| **Settings** | Copy mode and alert emails. |
+
+Django admin (`http://localhost:8000/admin/`) is still available as a backup.
+
+---
+
+## 9. Management commands (optional)
+
+Run with `docker compose exec web python manage.py <command>` from `backend/`.
 
 | Command | Purpose |
 |---|---|
-| `kite_login --account X [--request-token T]` | Daily token refresh. |
-| `kite_positions --account X` | Print live positions (read-only). |
-| `kite_sync_instruments --account X [--exchange NFO]` | Cache lot sizes (daily). |
+| `test copytrading` | Automated tests with a fake broker. No real orders. |
+| `kite_login --account X [--request-token T]` | Terminal fallback for the website's Zerodha login. |
+| `kite_sync_instruments [--account X] [--exchange NFO]` | Re-sync lot sizes by hand (normally automatic). |
 | `kite_ticker` | Live order feed (runs as its own container). |
-| `preflight` | Go-live checklist (GO / NO-GO). |
-| `send_test_email [--to ...]` | Verify SMTP. |
-| `reconcile_selftest` | Tests mismatch→alert→resolve with fake data (rolled back). |
-| `dispatch_selftest` | Tests dispatch (dry-run/live/fail/zero-qty) with fake data. |
-
----
-
-## 9. The two dashboards
-
-| URL | Auth | Use |
-|---|---|---|
-| `http://localhost:5173/dashboard` | SPA login | Vue dashboard: accounts, mappings, alerts (resolvable), copy orders, live event log. |
-| `http://localhost:8000/dashboard/` | none | Lightweight Django page for a quick glance. |
-
-Both subscribe to the same live feed (`ws/dashboard/`): every reconcile result,
-alert, copy order, and ticker event is pushed instantly.
 
 ---
 
 ## 10. Safety model
 
-1. **Dry-run by default** — nothing trades for real until you flip one flag.
-2. **Startup baseline** — never replays history; only new trades copy.
-3. **Transient vs terminal errors** — retries only what might succeed; margin
+1. **Dry run by default**: nothing trades for real until you choose Live (with a
+   confirmation).
+2. **Instant off switch**: Off stops even copies that are already queued.
+3. **Baseline**: never replays old orders, including after a late login or after
+   turning copying back on.
+4. **Transient vs terminal errors**: only errors that might succeed are retried; margin
    rejections fail fast and alert you.
-4. **Market-hours guard** — loops idle outside 09:15–15:30 IST.
-5. **Reconciliation watchdog** — even if copying silently fails, the 2s position
-   check emails you to intervene.
-6. **Idempotency** — one CopyOrder per (trade, mapping); no double-firing.
-7. **preflight** — a deliberate gate before the one irreversible action.
+5. **Market-hours guard**: the loops idle outside 09:15–15:30 IST.
+6. **Reconciliation watchdog**: in live mode, a position check every 2s alerts you
+   if anything drifts.
+7. **Idempotency**: one copy (plus at most one top-up) per trade and copy account, so nothing fires twice.
+   Extra quantity on a copy is never auto-exited; you decide.
+8. **Locked down**: every API call and the live feed need a login; there is no public
+   sign-up; broker secrets are encrypted and never sent back to the browser.
 
 ---
 
@@ -288,10 +251,11 @@ alert, copy order, and ticker event is pushed instantly.
 
 | Symptom | Likely cause / fix |
 |---|---|
-| `token_expired` alerts | Token missing/expired — run `kite_login` (and restart `kite_ticker`). |
-| Mismatch shows `lot 1` for an F&O symbol | Instruments not synced — run `kite_sync_instruments`. |
-| No copies happening | `COPYTRADING_LIVE_ORDERS=False` (dry-run), or market closed, or the order pre-dates the baseline. |
-| Ticker `403 Forbidden` | Streaming add-on not active on the master, token stale, or >3 concurrent sockets. REST poll still works. |
-| No alert emails | `ALERT_EMAIL_TO` empty, or `EMAIL_BACKEND` still console. Test with `send_test_email`. |
-| Loops hammering Kite on a weekend | `COPYTRADING_FORCE_MARKET_OPEN=True` left on — set it `False`. |
-| Code changes not taking effect in workers | Celery doesn't hot-reload: `docker compose restart celery_worker celery_beat kite_ticker`. |
+| "Login needed" alert | Zerodha login expired. Accounts → Login to Zerodha. |
+| Zerodha says the redirect URL doesn't match | Set the Kite app's Redirect URL to the one shown on the Accounts page. |
+| Logged in as the wrong Zerodha user | Log out at kite.zerodha.com, then log in again from Accounts. |
+| Mismatch shows `lot 1` for an F&O symbol | Lot sizes not synced yet; they sync after the master logs in. Or run `kite_sync_instruments`. |
+| No copies happening | Mode is Off or Dry run, the market is closed, or the order filled before the baseline. |
+| "Instant copy feed refused (403)" | Streaming add-on inactive on the master's app or a stale token. Copying still works via 2s polling. |
+| No alert emails | Add recipients on Settings and set `EMAIL_*` in `backend/.env`; use **Send test email**. |
+| Backend code changes not taking effect | Celery doesn't hot-reload: `docker compose restart celery_worker celery_beat kite_ticker`. |

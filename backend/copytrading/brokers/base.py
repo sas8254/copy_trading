@@ -37,6 +37,9 @@ class Position:
     net_quantity: int
     average_price: Optional[Decimal] = None
     instrument_token: Optional[int] = None
+    last_price: Optional[Decimal] = None
+    pnl: Optional[Decimal] = None
+    product: str = ""
 
 
 class BrokerError(Exception):
@@ -53,8 +56,9 @@ class BrokerClient(ABC):
 
     # --- Auth ---
     @abstractmethod
-    def login_url(self) -> str:
-        """URL the user visits to authorise and obtain a request token."""
+    def login_url(self, redirect_params: str = "") -> str:
+        """URL the user visits to authorise and obtain a request token.
+        `redirect_params` (a query string) is passed back on the redirect."""
 
     @abstractmethod
     def generate_session(self, request_token: str) -> dict:
@@ -70,7 +74,22 @@ class BrokerClient(ABC):
     def orders(self) -> list[dict]:
         """Today's orders (raw broker dicts)."""
 
+    @abstractmethod
+    def instruments(self, exchange: str) -> list[dict]:
+        """Instrument dump for one exchange (lot sizes etc.)."""
+
     # --- Writes ---
     @abstractmethod
     def place_order(self, order: OrderRequest) -> str:
         """Place an order; return the broker order id."""
+
+    @abstractmethod
+    def modify_order(
+        self, order_id: str, *, variety: str, quantity: int, order_type: str,
+        price: Optional[float], trigger_price: Optional[float],
+    ) -> None:
+        """Change an open order's quantity / type / prices."""
+
+    @abstractmethod
+    def cancel_order(self, order_id: str, *, variety: str) -> None:
+        """Cancel an open order."""

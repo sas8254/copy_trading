@@ -6,6 +6,7 @@ from datetime import timedelta
 from pathlib import Path
 
 import environ
+from celery.schedules import crontab
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
@@ -26,6 +27,9 @@ ALLOWED_HOSTS = [h.strip() for h in env("DJANGO_ALLOWED_HOSTS", default="").spli
 CORS_ALLOWED_ORIGINS = [
     o.strip() for o in env("DJANGO_CORS_ALLOWED_ORIGINS", default="").split(",") if o.strip()
 ]
+
+# Where the website lives (used to forward Zerodha's login redirect to it).
+FRONTEND_URL = env("FRONTEND_URL", default="http://localhost:5173").rstrip("/")
 
 CSRF_TRUSTED_ORIGINS = [
     o.strip() for o in env("DJANGO_CSRF_TRUSTED_ORIGINS", default="").split(",") if o.strip()
@@ -162,6 +166,12 @@ CELERY_BEAT_SCHEDULE = {
         "task": "copytrading.tasks.reconcile_positions",
         "schedule": 2.0,
     },
+    # Refresh F&O lot sizes each weekday morning (IST, see CELERY_TIMEZONE).
+    # Also runs right after the master logs in to Zerodha.
+    "sync-instruments-daily": {
+        "task": "copytrading.tasks.sync_instruments",
+        "schedule": crontab(hour=9, minute=0, day_of_week="mon-fri"),
+    },
 }
 
 
@@ -175,12 +185,18 @@ COPYTRADING_ALERT_EMAIL_COOLDOWN = env.int(
     "COPYTRADING_ALERT_EMAIL_COOLDOWN", default=900
 )
 
-# MASTER SWITCH for placing real copy orders. Default False = dry-run: copy
-# orders are computed and recorded as "simulated" but never sent to the broker.
-# Set to True in .env only when you are ready to trade real money.
-COPYTRADING_LIVE_ORDERS = env.bool("COPYTRADING_LIVE_ORDERS", default=False)
+# The copy mode (off / dry run / live) and alert recipients are set from the
+# web UI Settings page (stored in the AppSettings table), not here.
+
+# Key for encrypting broker API secrets / access tokens in the database.
+# Generate: python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+# If unset, a key is derived from DJANGO_SECRET_KEY.
+FIELD_ENCRYPTION_KEY = env("FIELD_ENCRYPTION_KEY", default="")
 # Max retries for a copy order on transient (network/5xx) failures.
 COPYTRADING_COPY_MAX_RETRIES = env.int("COPYTRADING_COPY_MAX_RETRIES", default=3)
+# Once the master's order has filled, how long a copy order may keep waiting
+# at its own price before the rest is cancelled and filled at MARKET.
+COPYTRADING_FILL_GRACE_SECONDS = env.int("COPYTRADING_FILL_GRACE_SECONDS", default=15)
 
 
 # ---------- Email (alerts) ----------
@@ -196,10 +212,6 @@ EMAIL_HOST_USER = env("EMAIL_HOST_USER", default="")
 EMAIL_HOST_PASSWORD = env("EMAIL_HOST_PASSWORD", default="")
 EMAIL_USE_TLS = env.bool("EMAIL_USE_TLS", default=True)
 DEFAULT_FROM_EMAIL = env("DEFAULT_FROM_EMAIL", default="copytrading@localhost")
-# Where mismatch / failure alerts are sent.
-ALERT_EMAIL_TO = [
-    e.strip() for e in env("ALERT_EMAIL_TO", default="").split(",") if e.strip()
-]
 
 
 # ---------- I18N ----------

@@ -10,7 +10,7 @@ from django.conf import settings
 from django.core.mail import send_mail
 from django.utils import timezone
 
-from ..models import Alert, BrokerAccount
+from ..models import Alert, AppSettings, BrokerAccount
 
 logger = logging.getLogger(__name__)
 
@@ -82,9 +82,9 @@ def _maybe_email(alert: Alert, now) -> None:
     cooldown = settings.COPYTRADING_ALERT_EMAIL_COOLDOWN
     if alert.emailed_at and (now - alert.emailed_at).total_seconds() < cooldown:
         return
-    recipients = settings.ALERT_EMAIL_TO
+    recipients = AppSettings.load().alert_email_list
     if not recipients:
-        logger.warning("ALERT_EMAIL_TO is empty; alert not emailed: %s", alert.message)
+        logger.warning("No alert emails configured; alert not emailed: %s", alert.message)
         return
     try:
         send_mail(
@@ -99,3 +99,14 @@ def _maybe_email(alert: Alert, now) -> None:
         return
     alert.emailed_at = now
     alert.save(update_fields=["emailed_at"])
+
+
+def send_test_email(recipients: list[str]) -> None:
+    """Send a test message; raises on SMTP failure so the UI can show why."""
+    send_mail(
+        subject="[CopyTrading] Test email",
+        message="Alert emails are working.",
+        from_email=settings.DEFAULT_FROM_EMAIL,
+        recipient_list=recipients,
+        fail_silently=False,
+    )

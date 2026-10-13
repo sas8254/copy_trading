@@ -8,7 +8,9 @@ separately (see PLAN.md / ticker step).
 from __future__ import annotations
 
 from decimal import Decimal
+from urllib.parse import quote
 
+from kiteconnect import exceptions as kex
 from kiteconnect.connect import KiteConnect
 
 from .base import BrokerClient, BrokerError, OrderRequest, Position
@@ -25,11 +27,27 @@ _TERMINAL_HINTS = (
     "circuit",
     "invalid",
 )
+# Kite exception types that will never succeed on retry.
+_TERMINAL_TYPES = (
+    kex.TokenException,
+    kex.PermissionException,
+    kex.InputException,
+    kex.OrderException,
+)
 
 
 def _classify(exc: Exception) -> str:
+    if isinstance(exc, _TERMINAL_TYPES):
+        return "terminal"
     msg = str(exc).lower()
     return "terminal" if any(h in msg for h in _TERMINAL_HINTS) else "transient"
+
+
+def _error(prefix: str, exc: Exception) -> BrokerError:
+    """Wrap a Kite exception; token errors get code="token" so callers can
+    tell the user to log in again."""
+    code = "token" if isinstance(exc, kex.TokenException) else ""
+    return BrokerError(f"{prefix}: {exc}", kind=_classify(exc), code=code)
 
 
 class ZerodhaClient(BrokerClient):
@@ -42,8 +60,11 @@ class ZerodhaClient(BrokerClient):
             self.kite.set_access_token(access_token)
 
     # --- Auth ---
-    def login_url(self) -> str:
-        return self.kite.login_url()
+    def login_url(self, redirect_params: str = "") -> str:
+        url = self.kite.login_url()
+        if redirect_params:
+            url += "&redirect_params=" + quote(redirect_params, safe="")
+        return url
 
     def generate_session(self, request_token: str) -> dict:
         try:
@@ -58,7 +79,7 @@ class ZerodhaClient(BrokerClient):
         try:
             net = self.kite.positions().get("net", [])
         except Exception as exc:  # noqa: BLE001
-            raise BrokerError(f"Fetch positions failed: {exc}", kind=_classify(exc)) from exc
+            raise _error("Fetch positions failed", exc) from exc
         result: list[Position] = []
         for p in net:
             result.append(
@@ -68,6 +89,9 @@ class ZerodhaClient(BrokerClient):
                     net_quantity=int(p.get("quantity", 0)),
                     average_price=Decimal(str(p.get("average_price", 0) or 0)),
                     instrument_token=p.get("instrument_token"),
+                    last_price=Decimal(str(p.get("last_price", 0) or 0)),
+                    pnl=Decimal(str(p.get("pnl", 0) or 0)),
+                    product=p.get("product", ""),
                 )
             )
         return result
@@ -76,7 +100,13 @@ class ZerodhaClient(BrokerClient):
         try:
             return self.kite.orders()
         except Exception as exc:  # noqa: BLE001
-            raise BrokerError(f"Fetch orders failed: {exc}", kind=_classify(exc)) from exc
+            raise _error("Fetch orders failed", exc) from exc
+
+    def instruments(self, exchange: str) -> list[dict]:
+        try:
+            return self.kite.instruments(exchange)
+        except Exception as exc:  # noqa: BLE001
+            raise _error("Fetch instruments failed", exc) from exc
 
     # --- Writes ---
     def place_order(self, order: OrderRequest) -> str:
@@ -94,6 +124,23 @@ class ZerodhaClient(BrokerClient):
                 tag=order.tag,
             )
         except Exception as exc:  # noqa: BLE001
-            raise BrokerError(
-                f"Place order failed: {exc}", kind=_classify(exc)
-            ) from exc
+            raise _error("Place order failed", exc) from exc
+
+    def modify_order(self, order_id, *, variety, quantity, order_type, price, trigger_price):
+        try:
+            self.kite.modify_order(
+                variety=variety,
+                order_id=order_id,
+                quantity=quantity,
+                order_type=order_type,
+                price=price,
+                trigger_price=trigger_price,
+            )
+        except Exception as exc:  # noqa: BLE001
+            raise _error("Modify order failed", exc) from exc
+
+    def cancel_order(self, order_id, *, variety):
+        try:
+            self.kite.cancel_order(variety=variety, order_id=order_id)
+        except Exception as exc:  # noqa: BLE001
+            raise _error("Cancel order failed", exc) from exc

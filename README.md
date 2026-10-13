@@ -1,6 +1,12 @@
-# Core — Django + Vue Boilerplate
+# Copy Trading
 
-A small-scale starter for full-stack apps. Each part (backend, frontend, prod-nginx) is an independent Docker Compose stack with its own `.env`, `Dockerfile`, and `start.sh` / `stop.sh`.
+Copies trades from one Zerodha account (the master) to other Zerodha accounts,
+with a per-account quantity multiplier. Everything is managed from the website.
+
+> 📖 **[docs/GUIDE.md](docs/GUIDE.md)**: how it works, setup, every setting.
+> 📋 **[docs/CHEATSHEET.md](docs/CHEATSHEET.md)**: the daily steps on one page.
+
+Each part (backend, frontend, prod-nginx) is an independent Docker Compose stack with its own `.env`, `Dockerfile`, and `start.sh` / `stop.sh`.
 
 ## Stack
 
@@ -23,7 +29,8 @@ Default Django `User` model. Knox tokens stored in browser `localStorage`.
 my_project/
 ├── backend/          # Django (dev: runserver, port 8000)
 │   ├── core/         # Django project (settings.py, urls.py, ...)
-│   ├── accounts/     # auth app (register/login/logout/me)
+│   ├── accounts/     # website login (login/logout/me)
+│   ├── copytrading/  # copy-trading app (models, API, services, Celery tasks)
 │   ├── Dockerfile
 │   ├── docker-compose.yml
 │   ├── requirements.txt
@@ -35,7 +42,7 @@ my_project/
 │   │   ├── stores/auth.js         # Pinia auth store
 │   │   ├── router/index.js        # routes + guards
 │   │   ├── plugins/vuetify.js
-│   │   └── views/                 # LoginView, RegisterView, ProfileView
+│   │   └── views/                 # Home, Accounts, Positions, Orders, Settings, Login
 │   ├── Dockerfile
 │   ├── docker-compose.yml
 │   ├── vite.config.js
@@ -144,21 +151,29 @@ Each stack has its own `.env` (gitignored) and `.env.example` (committed).
 
 ## API endpoints
 
-All return/accept JSON. Knox tokens are passed as `Authorization: Token <key>`.
+All return/accept JSON and require `Authorization: Token <key>` except health and login.
+There is no public sign-up; add users in Django admin.
 
-| Method | Path | Auth | Body | Notes |
-|---|---|---|---|---|
-| GET  | `/api/health/` | none | — | Liveness check |
-| POST | `/api/auth/register/` | none | `{username, email, password, [first_name, last_name]}` | Returns user object |
-| POST | `/api/auth/login/` | none | `{username, password}` | Returns `{token, expiry}` |
-| POST | `/api/auth/logout/` | token | — | Invalidates the token used |
-| POST | `/api/auth/logoutall/` | token | — | Invalidates all tokens for the user |
-| GET  | `/api/auth/me/` | token | — | Current user |
-| GET  | `/api/copytrading/overview/` | token | — | Dashboard snapshot (accounts, mappings, alerts, copy orders, trades, runtime) |
-| POST | `/api/copytrading/alerts/<id>/resolve/` | token | — | Acknowledge an alert |
-| WS   | `/ws/dashboard/` | none | — | Live event feed (snapshot + stream) |
-| —    | `/dashboard/` | none | — | Lightweight Django-served dashboard |
-| —    | `/admin/` | session | — | Django admin |
+| Method | Path | Notes |
+|---|---|---|
+| GET  | `/api/health/` | Liveness check (no auth) |
+| POST | `/api/auth/login/` | `{username, password}` → `{token, expiry}` (no auth) |
+| POST | `/api/auth/logout/`, `/api/auth/logoutall/` | Invalidate this / all tokens |
+| GET  | `/api/auth/me/` | Current user |
+| GET  | `/api/copytrading/overview/` | Home page: mode, checklist, alerts, recent orders |
+| GET/POST | `/api/copytrading/accounts/` | List / add accounts |
+| GET/PATCH/DELETE | `/api/copytrading/accounts/<id>/` | One account (API secret is write-only) |
+| POST | `/api/copytrading/accounts/<id>/make-master/` | Make this the master |
+| GET  | `/api/copytrading/accounts/<id>/login-url/` | Zerodha login URL |
+| POST | `/api/copytrading/accounts/<id>/login/` | `{request_token}` → stores the day's access token |
+| GET  | `/api/copytrading/positions/` | Live positions: master + per-copy comparison |
+| GET  | `/api/copytrading/orders/?limit=` | Master orders with their copy orders |
+| GET/PATCH | `/api/copytrading/settings/` | `{mode: off\|dry_run\|live, alert_emails}` |
+| POST | `/api/copytrading/settings/test-email/` | Send a test alert email |
+| GET  | `/api/copytrading/alerts/?resolved=` | Alerts |
+| POST | `/api/copytrading/alerts/<id>/resolve/`, `/api/copytrading/alerts/resolve-all/` | Dismiss alerts |
+| WS   | `/ws/dashboard/?token=<key>` | Live event feed |
+| —    | `/admin/` | Django admin (backup) |
 
 ## Adding a new Django app
 
@@ -208,25 +223,16 @@ Token TTL is 10 hours with `AUTO_REFRESH=True` (each request resets the clock). 
 
 ## Copy Trading
 
-A `copytrading` Django app that mirrors trades from a **master** Zerodha account
-onto one or more **copy** accounts, with a per-account quantity multiplier and a
-2-second position reconciliation watchdog.
-
-> 📖 **[docs/GUIDE.md](docs/GUIDE.md)** — full explanation of architecture, data
-> model, lifecycle, and every setting.
-> 📋 **[docs/CHEATSHEET.md](docs/CHEATSHEET.md)** — one-page daily command reference.
-> 🗒️ **[PLAN.md](PLAN.md)** — design history and decisions.
-
 ### Extra services (backend stack)
 
-Beyond `db` + `web`, the backend compose now runs:
+Beyond `db` + `web`, the backend compose runs:
 
 | Service | Role |
 |---|---|
 | `redis` | Celery broker/result backend + Channels layer |
-| `web` | **Daphne** (ASGI) — serves HTTP **and** WebSockets |
-| `celery_worker` | Runs copy-order placement + retries |
-| `celery_beat` | Fires the 2s order-poll and reconciliation tasks |
+| `web` | **Daphne** (ASGI): serves HTTP **and** WebSockets |
+| `celery_worker` | Places copy orders, retries, syncs lot sizes |
+| `celery_beat` | Every 2s: order poll + reconciliation. Weekdays 9:00 IST: lot-size sync |
 | `kite_ticker` | Live Zerodha order WebSocket (instant copy trigger) |
 
 ### Data flow
@@ -235,127 +241,16 @@ Beyond `db` + `web`, the backend compose now runs:
 master orders ──┬─ Kite Ticker WS (kite_ticker)  ─┐  instant
                 └─ REST poll (celery_beat, 2s)    ─┴─▶ Trade ─▶ dispatch ─▶ copy order(s)
                                                           (×multiplier, lot-rounded, retry)
-positions ───────── reconcile (celery_beat, 2s) ──▶ mismatch ─▶ Alert (email + dashboard)
-all events ──────── Channels ─▶ ws/dashboard/ ────▶ live dashboards
+positions ───────── reconcile (celery_beat, 2s) ──▶ mismatch ─▶ Alert (email + website)
+all events ──────── Channels ─▶ ws/dashboard/ ────▶ website (live)
 ```
 
-### One-time account setup
+### Using it
 
-1. Activate the **Kite Connect** subscription on the **master** account
-   (streaming/WebSocket is the paid add-on; copy accounts need REST only).
-2. In Django admin (`/admin/copytrading/`), create two `BrokerAccount` rows
-   (api_key + api_secret from developers.kite.trade): one role **master**, one
-   role **copy**. Then create a `CopyMapping` master→copy with a `multiplier`.
+1. Start both stacks (above) and open http://localhost:5173.
+2. **Accounts**: add the master and the copy accounts (Kite Connect API key +
+   secret). Set each Kite app's Redirect URL to `http://localhost:5173/kite/callback`.
+3. Every trading morning: **Login to Zerodha** on each account.
+4. **Settings**: switch copying from **Dry run** to **Live** when ready.
 
-### Daily run (tokens expire ~6 AM IST)
-
-```bash
-cd backend
-bash morning.sh            # macOS/Linux/Git-Bash: logs in both accounts, syncs
-                           # instruments, restarts ticker+workers, runs preflight
-```
-```powershell
-cd backend
-.\morning.ps1              # Windows PowerShell equivalent
-```
-Or manually:
-```bash
-docker compose exec web python manage.py kite_login --account "mom_zerodha"
-docker compose exec web python manage.py kite_login --account "mom_zerodha" --request-token XXXX
-docker compose exec web python manage.py kite_sync_instruments --account "mom_zerodha"
-docker compose restart kite_ticker celery_worker celery_beat
-```
-
-### Going live (real orders)
-
-The app **defaults to dry-run** (`COPYTRADING_LIVE_ORDERS=False`): copy orders
-are computed and recorded as `simulated`, never sent to the broker. To trade for
-real:
-
-```bash
-docker compose exec web python manage.py preflight     # GO / NO-GO checklist
-# set COPYTRADING_LIVE_ORDERS=True in backend/.env, then:
-docker compose up -d && docker compose restart celery_worker
-```
-Start with a small multiplier and one cheap instrument.
-
-### Dashboards
-
-| URL | Auth | Notes |
-|---|---|---|
-| `http://localhost:5173/dashboard` | SPA login | Vue/Vuetify; accounts, alerts (resolvable), copy orders, live log |
-| `http://localhost:8000/dashboard/` | none | Lightweight Django-served page for quick checks |
-
-Both stream the same live feed over `ws/dashboard/`.
-
-### Email alerts (SMTP)
-
-Mismatches and failed orders are emailed (deduped, rate-limited). Dev defaults to
-the **console** backend (prints to logs). For real email, configure SMTP in
-`backend/.env` — see the `# ---- Email (alerts) ----` block there (Gmail needs an
-**App Password**, not your login password). Verify with:
-
-```bash
-docker compose exec web python manage.py send_test_email
-```
-
-### Management commands (copytrading)
-
-| Command | Purpose |
-|---|---|
-| `kite_login --account <id\|label> [--request-token X]` | Daily token refresh |
-| `kite_positions --account <id\|label>` | Print live positions (read-only) |
-| `kite_sync_instruments --account <id\|label> [--exchange NFO]` | Cache lot sizes |
-| `kite_ticker` | Long-running live order feed (runs as its own container) |
-| `preflight` | Go-live safety checklist (GO / NO-GO) |
-| `send_test_email [--to ...]` | Verify SMTP config |
-| `reconcile_selftest` / `dispatch_selftest` | Pipeline self-tests (fake data, no broker) |
-
-### Key settings (`backend/.env`)
-
-| Var | Default | Meaning |
-|---|---|---|
-| `COPYTRADING_LIVE_ORDERS` | `False` | `True` places real orders; else dry-run |
-| `COPYTRADING_FORCE_MARKET_OPEN` | `False` | Bypass IST market-hours guard (testing) |
-| `COPYTRADING_COPY_MAX_RETRIES` | `3` | Transient-failure retries per copy order |
-| `COPYTRADING_ALERT_EMAIL_COOLDOWN` | `900` | Min seconds between re-emails of one alert |
-| `ALERT_EMAIL_TO` | — | Comma-separated alert recipients |
-
-## Troubleshooting
-
-**`ModuleNotFoundError` after editing `requirements.txt`** — rebuild the backend image:
-```bash
-cd backend && docker compose up --build -d
-```
-
-**Vite shows blank page in browser** — check the container logs:
-```bash
-cd frontend && docker compose logs -f web
-```
-If file edits aren't triggering reloads, ensure `usePolling: true` is set in `vite.config.js` (it is by default in this template — required for Windows host → Linux container bind mounts).
-
-**CORS errors in dev** — `frontend/.env` `VITE_API_BASE_URL` and `backend/.env` `DJANGO_CORS_ALLOWED_ORIGINS` must agree on the frontend origin (`http://localhost:5173`).
-
-**"CSRF verification failed" on admin login (prod stack)** — `DJANGO_CSRF_TRUSTED_ORIGINS` in `nginx/.env` must include the URL you typed in your browser (e.g. `http://localhost`).
-
-**Port already in use** — another stack is running. Stop it with `./stop.sh`. Dev backend uses 5432/8000, dev frontend uses 5173, prod uses 80.
-
-**Postgres "role does not exist" after editing `POSTGRES_USER`** — the credentials are baked in on first start. Either reset:
-```bash
-./stop.sh --wipe
-./start.sh
-```
-or `ALTER USER` from inside `psql`.
-
-**Need a fresh DB** — `./stop.sh --wipe && ./start.sh`. Destructive.
-
-## Future additions
-
-When you outgrow this scope:
-
-- **WebSockets** — ✅ done: `channels` + `daphne`, proxied via Nginx `/ws/` (see Copy Trading)
-- **Celery + Redis** — ✅ done: `redis` + `celery_worker` + `celery_beat` services
-- **HTTPS** — uncomment the TLS server block in `nginx/nginx.conf`, mount certs from `nginx/certs/` (Let's Encrypt + certbot in prod)
-- **Non-root user in containers** — add `useradd` + `USER app` to the backend Dockerfile
-- **Locked dependencies** — `pip-tools` for backend (compile `requirements.in` → `requirements.txt`)
-- **CI** — GitHub Actions running `pytest`, `eslint`, `docker build`
+See [docs/GUIDE.md](docs/GUIDE.md) for details.

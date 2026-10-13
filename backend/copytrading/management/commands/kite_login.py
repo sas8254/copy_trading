@@ -1,6 +1,7 @@
-"""Daily Zerodha login flow.
+"""Daily Zerodha login from the terminal (fallback for the web UI's
+"Login to Zerodha" button on the Accounts page).
 
-Zerodha access tokens expire ~6 AM IST, so this is run once each morning.
+Zerodha access tokens expire ~6 AM IST, so a login is needed once each morning.
 
 Step 1 - print the login URL:
     python manage.py kite_login --account "Main Zerodha"
@@ -13,9 +14,9 @@ Step 2 - exchange the request token for an access token (stored on the account):
 """
 
 from django.core.management.base import BaseCommand, CommandError
-from django.utils import timezone
 
 from copytrading.brokers import get_client
+from copytrading.services.accounts import complete_kite_login
 
 from ._utils import resolve_account
 
@@ -35,7 +36,7 @@ class Command(BaseCommand):
         if not account.api_key or not account.api_secret:
             raise CommandError(
                 f"Account '{account.label}' is missing api_key/api_secret. "
-                "Set them in the admin first."
+                "Set them on the Accounts page first."
             )
 
         client = get_client(account)
@@ -50,13 +51,9 @@ class Command(BaseCommand):
             )
             return
 
-        data = client.generate_session(request_token)
-        account.access_token = data["access_token"]
-        account.token_updated_at = timezone.now()
-        account.save(update_fields=["access_token", "token_updated_at"])
+        complete_kite_login(account, request_token)
         self.stdout.write(
             self.style.SUCCESS(
-                f"Access token stored for '{account.label}' "
-                f"(user: {data.get('user_id', '?')})."
+                f"Access token stored for '{account.label}' (user: {account.client_id or '?'})."
             )
         )

@@ -1,104 +1,66 @@
 # Copy Trading — Cheat Sheet
 
 One-page daily reference. Full details in [GUIDE.md](./GUIDE.md).
-All commands run from `backend/`. Prefix with: `docker compose exec web python manage.py`
 
 ---
 
-## Every morning (tokens expire ~6 AM IST)
+## Every trading morning (Zerodha logins expire ~6 AM IST)
 
-```powershell
-.\morning.ps1            # Windows  — login both accounts, sync, restart, preflight
-```
+1. Open **http://localhost:5173**
+2. **Accounts** → click **Login to Zerodha** on each account
+3. **Home** → the checklist should be all green
+
+Nothing to restart. Lot sizes sync automatically.
+
+---
+
+## Where things are
+
+| I want to… | Go to |
+| --- | --- |
+| Turn copying Off / Dry run / Live | **Settings → Copying** |
+| Copy after fill vs mirror the master's orders | **Settings → Copy style** |
+| Stop everything right now | **Settings → Copying → Off** |
+| Add or edit an account, change a multiplier | **Accounts** |
+| Change which account is the master | **Accounts → ⋮ → Make master** |
+| Check master vs copy positions | **Positions** |
+| See what was copied and why something failed | **Orders** |
+| Change alert emails / send a test email | **Settings → Alert emails** |
+
+---
+
+## Start / stop the app
+
+Run from `backend/` (and the same in `frontend/` for the website):
 
 ```bash
-bash morning.sh          # macOS/Linux/Git-Bash
+docker compose up -d                                              # start everything
+docker compose ps                                                 # status of all containers
+docker compose down                                               # stop (keeps data)
+docker compose logs -f celery_worker                              # watch the copy/reconcile loop
+docker compose logs -f kite_ticker                                # watch the live order feed
+docker compose restart celery_worker celery_beat kite_ticker      # only after editing backend code
 ```
 
-### …or manually
+---
+
+## Tests (safe, fake broker, no real orders)
 
 ```bash
-# 1. Login MASTER
-docker compose exec web python manage.py kite_login --account "mom_zerodha"                       # prints URL
-docker compose exec web python manage.py kite_login --account "mom_zerodha" --request-token XXXX  # store token
-# 2. Login COPY
-docker compose exec web python manage.py kite_login --account "my_zerodha"
-docker compose exec web python manage.py kite_login --account "my_zerodha" --request-token YYYY
-# 3. Sync lot sizes + restart + check
-docker compose exec webpython manage.py kite_sync_instruments --account "mom_zerodha"
-docker compose restart kite_ticker celery_worker celery_beat
-docker compose exec webpython manage.py preflight
+docker compose exec web python manage.py test copytrading
 ```
-
----
-
-## Stack control
-
-```bash
-docker compose exec web docker compose up -d                      # start everything
-docker compose exec web docker compose ps                         # status of all containers
-docker compose exec web docker compose restart celery_worker celery_beat kite_ticker   # reload code into workers
-docker compose exec web docker compose down                       # stop (keeps data)
-docker compose exec web docker compose logs -f celery_worker      # watch the copy/reconcile loop
-docker compose exec web docker compose logs -f kite_ticker        # watch the live order feed
-```
-
----
-
-## Dashboards
-
-| URL                              | Notes                      |
-| -------------------------------- | -------------------------- |
-| http://localhost:5173/dashboard  | Vue SPA (needs login)      |
-| http://localhost:8000/dashboard/ | Quick view (no login)      |
-| http://localhost:8000/admin/     | Accounts, mappings, alerts |
-
----
-
-## Checks & tests (safe, no real orders)
-
-```bash
-docker compose exec web python manage.py preflight             # GO / NO-GO readiness
-docker compose exec web python manage.py kite_positions --account "mom_zerodha"   # live positions
-docker compose exec web python manage.py send_test_email       # verify SMTP
-docker compose exec web python manage.py reconcile_selftest    # mismatch→alert→resolve (fake data)
-docker compose exec web python manage.py dispatch_selftest     # dispatch pipeline (fake data)
-```
-
----
-
-## Go live (real orders) — be deliberate
-
-```bash
-docker compose exec web python manage.py preflight                 # must say GO
-# set COPYTRADING_LIVE_ORDERS=True in backend/.env, then:
-docker compose up -d && docker compose restart celery_worker
-```
-
-Start with a **small multiplier** and **one cheap instrument**.
-Back to safe: set `COPYTRADING_LIVE_ORDERS=False`, `docker compose up -d`, restart worker.
-
----
-
-## Key `.env` flags
-
-| Flag                               | Default | Meaning                                        |
-| ---------------------------------- | ------- | ---------------------------------------------- |
-| `COPYTRADING_LIVE_ORDERS`          | `False` | `True` = real orders; else dry-run (simulated) |
-| `COPYTRADING_FORCE_MARKET_OPEN`    | `False` | `True` = run loops off-hours (testing only)    |
-| `COPYTRADING_COPY_MAX_RETRIES`     | `3`     | Transient-failure retries per copy order       |
-| `COPYTRADING_ALERT_EMAIL_COOLDOWN` | `900`   | Min seconds between re-emails of one alert     |
-| `ALERT_EMAIL_TO`                   | —       | Alert recipients (comma-separated)             |
 
 ---
 
 ## Quick fixes
 
-| Problem                 | Fix                                                                                   |
-| ----------------------- | ------------------------------------------------------------------------------------- |
-| `token_expired`         | `kite_login` again, then restart `kite_ticker`                                        |
-| F&O qty wrong / `lot 1` | `kite_sync_instruments`                                                               |
-| Nothing copying         | Check `LIVE_ORDERS`, market hours, and baseline (orders before startup aren't copied) |
-| Ticker 403              | Master streaming add-on inactive / token stale — REST poll still copies               |
-| No emails               | Set `ALERT_EMAIL_TO` + real `EMAIL_BACKEND`; test with `send_test_email`              |
-| Edits not applied       | `docker compose restart celery_worker celery_beat kite_ticker`                        |
+| Problem | Fix |
+| --- | --- |
+| "Login needed" alert | Accounts → Login to Zerodha |
+| Logged in as the wrong Zerodha user | Log out at kite.zerodha.com, log in again from Accounts |
+| Nothing copying | Settings mode, market hours (9:15–15:30 IST), and only orders filled *after* login are copied |
+| F&O quantity wrong / `lot 1` | Wait for the lot-size sync after the master logs in, or `docker compose exec web python manage.py kite_sync_instruments` |
+| "Instant copy feed refused (403)" | Needs the paid streaming add-on; turn the feed off on Settings (copying works via 2s polling) |
+| "holds N extra" alert | Copy filled but the master cancelled; exit the extra in Zerodha if you don't want it |
+| "Only X of Y could be copied" | Top-up failed (e.g. margin); fix in Zerodha |
+| No emails | Settings → alert emails + `EMAIL_*` in `backend/.env` → **Send test email** |

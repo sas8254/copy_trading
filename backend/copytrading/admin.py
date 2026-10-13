@@ -1,52 +1,36 @@
+"""Django admin: a backup to the web UI (everything is editable from the UI)."""
+
 from django.contrib import admin
 
-from .models import (
-    Alert,
-    BrokerAccount,
-    CopyMapping,
-    CopyOrder,
-    Instrument,
-    PositionSnapshot,
-    Trade,
-)
+from .models import Alert, AppSettings, BrokerAccount, CopyOrder, Instrument, Trade
+
+
+@admin.register(AppSettings)
+class AppSettingsAdmin(admin.ModelAdmin):
+    list_display = ("mode", "alert_emails", "updated_at")
+
+    def has_add_permission(self, request):
+        return not AppSettings.objects.exists()
 
 
 @admin.register(BrokerAccount)
 class BrokerAccountAdmin(admin.ModelAdmin):
-    list_display = ("label", "broker", "role", "active", "token_updated_at")
-    list_filter = ("broker", "role", "active")
-    search_fields = ("label",)
-    # Secrets are write-only-ish: hidden from the changelist, editable on the form.
+    list_display = ("label", "role", "client_id", "multiplier", "active", "token_updated_at")
+    list_filter = ("role", "active")
+    search_fields = ("label", "client_id")
+    # Secrets are not shown; set them from the web UI.
     fields = (
-        "label",
-        "broker",
-        "role",
-        "api_key",
-        "api_secret",
-        "access_token",
-        "token_updated_at",
-        "active",
+        "label", "broker", "role", "client_id", "api_key",
+        "active", "multiplier", "zero_qty_policy",
+        "token_updated_at", "copy_orders_since",
     )
     readonly_fields = ("token_updated_at",)
-
-
-@admin.register(CopyMapping)
-class CopyMappingAdmin(admin.ModelAdmin):
-    list_display = ("master", "copy", "multiplier", "zero_qty_policy", "active")
-    list_filter = ("active", "zero_qty_policy")
-    autocomplete_fields = ("master", "copy")
 
 
 @admin.register(Trade)
 class TradeAdmin(admin.ModelAdmin):
     list_display = (
-        "observed_at",
-        "account",
-        "side",
-        "quantity",
-        "tradingsymbol",
-        "exchange",
-        "status",
+        "observed_at", "account", "side", "quantity", "tradingsymbol", "exchange", "status",
     )
     list_filter = ("account", "side", "exchange", "status")
     search_fields = ("tradingsymbol", "broker_order_id")
@@ -56,25 +40,11 @@ class TradeAdmin(admin.ModelAdmin):
 @admin.register(CopyOrder)
 class CopyOrderAdmin(admin.ModelAdmin):
     list_display = (
-        "created_at",
-        "mapping",
-        "computed_quantity",
-        "status",
-        "is_dry_run",
-        "attempts",
-        "error_kind",
-        "broker_order_id",
+        "created_at", "account", "computed_quantity", "status", "is_dry_run",
+        "attempts", "error_kind", "broker_order_id",
     )
-    list_filter = ("status", "is_dry_run", "error_kind")
+    list_filter = ("status", "is_dry_run", "error_kind", "account")
     search_fields = ("broker_order_id", "error_code")
-
-
-@admin.register(PositionSnapshot)
-class PositionSnapshotAdmin(admin.ModelAdmin):
-    list_display = ("captured_at", "account", "tradingsymbol", "exchange", "net_quantity")
-    list_filter = ("account", "exchange")
-    search_fields = ("tradingsymbol",)
-    date_hierarchy = "captured_at"
 
 
 @admin.register(Instrument)

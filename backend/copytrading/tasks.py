@@ -32,25 +32,34 @@ def reconcile_positions():
 
 @shared_task
 def poll_master_orders():
-    """Poll master accounts for newly completed orders and dispatch them."""
-    from .services.detect import detect_all
+    """One pass of the copy engine: read master orders, place / modify /
+    cancel / top up copy orders (see services/sync.py)."""
+    from .services.sync import run_cycle
 
     try:
-        return detect_all()
+        return run_cycle()
     except Exception:  # noqa: BLE001
         logger.exception("poll_master_orders failed")
         return {"error": "exception"}
 
 
 @shared_task
-def dispatch_trade(trade_id: int):
-    """Fan a master Trade out to copy accounts (creates + enqueues CopyOrders)."""
-    from .services.dispatch import dispatch_trade as _dispatch
+def sync_instruments(account_id: int | None = None):
+    """Refresh F&O lot sizes using the master's (or given account's) token."""
+    from .models import BrokerAccount
+    from .services.accounts import sync_instruments as _sync
+    from .services.positions import master_account
 
+    account = (
+        BrokerAccount.objects.filter(pk=account_id).first() if account_id else master_account()
+    )
+    if account is None or not account.access_token:
+        logger.info("sync_instruments: no logged-in account; skipping")
+        return {"skipped": "no_token"}
     try:
-        return _dispatch(trade_id)
+        return {"synced": _sync(account)}
     except Exception:  # noqa: BLE001
-        logger.exception("dispatch_trade failed for trade=%s", trade_id)
+        logger.exception("sync_instruments failed")
         return {"error": "exception"}
 
 

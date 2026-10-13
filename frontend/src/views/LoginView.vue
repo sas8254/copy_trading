@@ -17,7 +17,7 @@ async function onSubmit() {
   loading.value = true
   try {
     await auth.login(username.value, password.value)
-    const next = typeof route.query.next === 'string' ? route.query.next : '/profile'
+    const next = typeof route.query.next === 'string' ? route.query.next : '/'
     router.push(next)
   } catch (e) {
     error.value = e.response?.data?.non_field_errors?.[0] || 'Login failed.'
@@ -28,21 +28,19 @@ async function onSubmit() {
 </script>
 
 <template>
-  <v-row justify="center">
+  <v-row justify="center" class="mt-8">
     <v-col cols="12" sm="8" md="5">
       <v-card>
-        <v-card-title>Login</v-card-title>
+        <v-card-title>Copy Trading</v-card-title>
+        <v-card-subtitle>Sign in to continue</v-card-subtitle>
         <v-card-text>
           <v-form @submit.prevent="onSubmit">
-            <v-text-field v-model="username" label="Username" required autofocus />
-            <v-text-field v-model="password" label="Password" type="password" required />
+            <v-text-field v-model="username" label="Username" autocomplete="username" required autofocus />
+            <v-text-field v-model="password" label="Password" type="password" autocomplete="current-password" required />
             <v-alert v-if="error" type="error" density="compact" class="mb-3">{{ error }}</v-alert>
             <v-btn type="submit" color="primary" :loading="loading" block>Sign in</v-btn>
           </v-form>
         </v-card-text>
-        <v-card-actions>
-          <v-btn :to="{ name: 'register' }" variant="text">Need an account?</v-btn>
-        </v-card-actions>
       </v-card>
     </v-col>
   </v-row>

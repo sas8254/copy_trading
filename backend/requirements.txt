@@ -5,6 +5,8 @@ psycopg[binary]~=3.2
 django-environ~=0.11
 django-cors-headers~=4.4
 whitenoise~=6.7
+# Encrypts broker API secrets / access tokens in the database.
+cryptography>=42
 gunicorn~=23.0
 
 # Async / realtime
