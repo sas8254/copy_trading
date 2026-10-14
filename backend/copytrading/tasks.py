@@ -34,13 +34,36 @@ def reconcile_positions():
 def poll_master_orders():
     """One pass of the copy engine: read master orders, place / modify /
     cancel / top up copy orders (see services/sync.py)."""
+    from .heartbeat import beat
     from .services.sync import run_cycle
 
+    beat()
     try:
         return run_cycle()
     except Exception:  # noqa: BLE001
         logger.exception("poll_master_orders failed")
         return {"error": "exception"}
+
+
+@shared_task
+def login_reminder():
+    """Weekday mornings: alert (and email) if an enabled account still needs
+    today's Zerodha login."""
+    from .models import AlertKind, BrokerAccount
+    from .services.alerts import raise_alert
+
+    missing = [a.label for a in BrokerAccount.objects.filter(active=True) if not a.token_valid]
+    if not missing:
+        return {"ok": True}
+    from django.utils import timezone
+
+    raise_alert(
+        AlertKind.TOKEN_EXPIRED,
+        f"Log in to Zerodha before the market opens: {', '.join(missing)} "
+        f"(Accounts page). Nothing is copied until then.",
+        dedup_key=f"reminder:{timezone.localdate()}",
+    )
+    return {"missing": missing}
 
 
 @shared_task

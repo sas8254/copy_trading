@@ -1,0 +1,13 @@
+# Build context for deploy/Dockerfile is the repo root: keep secrets and bulky
+# folders out of it.
+**/.env
+**/.env.*
+!**/.env.example
+**/node_modules
+**/dist
+**/__pycache__
+.git
+.vscode
+.claude
+backend
+deploy/backups

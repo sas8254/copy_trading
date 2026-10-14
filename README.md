@@ -6,7 +6,10 @@ with a per-account quantity multiplier. Everything is managed from the website.
 > 📖 **[docs/GUIDE.md](docs/GUIDE.md)**: how it works, setup, every setting.
 > 📋 **[docs/CHEATSHEET.md](docs/CHEATSHEET.md)**: the daily steps on one page.
 
-Each part (backend, frontend, prod-nginx) is an independent Docker Compose stack with its own `.env`, `Dockerfile`, and `start.sh` / `stop.sh`.
+Two ways to run it, each a Docker Compose stack with its own `.env` and `start.sh` / `stop.sh`:
+
+- **Development** on your computer: `backend/` + `frontend/` (code reloads, debug on).
+- **Production** on a server: `deploy/` (HTTPS, everything baked into images, backups).
 
 ## Stack
 
@@ -17,7 +20,7 @@ Each part (backend, frontend, prod-nginx) is an independent Docker Compose stack
 | Broker | Zerodha Kite Connect (REST + Ticker WebSocket) |
 | Database | PostgreSQL 16 |
 | Frontend | Vue 3, Vite, Vue Router, Pinia, axios, Vuetify 3 |
-| Prod server | Nginx 1.27 (alpine) |
+| Prod server | Caddy 2 (automatic HTTPS) |
 | Containers | Docker / Docker Compose |
 | Backend base image | Ubuntu 24.04 |
 
@@ -48,12 +51,13 @@ my_project/
 │   ├── vite.config.js
 │   ├── .env / .env.example
 │   └── start.sh / stop.sh
-└── nginx/            # prod-like (port 80, nginx + gunicorn + db)
-    ├── Dockerfile               # multi-stage: builds frontend + nginx image
-    ├── nginx.conf
-    ├── docker-compose.yml
+└── deploy/           # production: HTTPS + full copy-trading stack + backups
+    ├── docker-compose.yml       # caddy, web, celery_worker, celery_beat, kite_ticker, db, redis, backup
+    ├── Caddyfile                # HTTPS, website, /api + /ws proxy
+    ├── Dockerfile               # builds the website into the Caddy image
     ├── .env / .env.example
-    └── start.sh / stop.sh
+    ├── start.sh / stop.sh / restore.sh
+    └── backups/                 # daily database dumps (gitignored)
 ```
 
 ## Prerequisites
@@ -78,11 +82,6 @@ python -c "import secrets; print(secrets.token_urlsafe(50))"
 # Frontend env
 cp frontend/.env.example frontend/.env
 
-# (Optional, only if you want to run the prod-like stack)
-cp nginx/.env.example nginx/.env
-# Generate another fresh secret key for prod:
-python -c "import secrets; print(secrets.token_urlsafe(50))"
-# Paste into DJANGO_SECRET_KEY in nginx/.env
 ```
 
 ## Running — development
@@ -111,43 +110,51 @@ To stop:
 ./stop.sh --wipe    # destroys postgres volume
 ```
 
-## Running — production-like (local)
+## Deploying to a server
 
-Stop the dev stacks first (port conflicts on Postgres). Then:
+Everything runs from `deploy/`: Caddy (HTTPS), the website, the API, the copy
+engine (Celery worker + beat), the optional Zerodha ticker, Postgres, Redis and
+daily backups. Postgres and Redis are not reachable from outside.
 
-```bash
-cd nginx
-./start.sh
-```
+**You need:** a small Linux VPS (2 GB RAM is plenty) with Docker, a domain whose
+DNS A record points at the server, and ports 80 + 443 open.
 
-This builds a single self-contained stack:
+1. **Copy the project to the server** (e.g. `git clone`), then:
+   ```bash
+   cd deploy
+   cp .env.example .env    # fill in every <...> value; comments explain each one
+   ./start.sh
+   ```
+   `start.sh` refuses to start while placeholders are left, builds everything,
+   runs migrations and creates the website login. Caddy fetches the HTTPS
+   certificate on first start.
+2. **Kite apps:** set each app's Redirect URL to `https://<your-domain>/kite/callback`.
+3. **Website:** add the accounts again (the server has its own database), log in
+   to Zerodha, set alert emails.
+4. **Dead-man's switch (strongly recommended):** create a free check at
+   [healthchecks.io](https://healthchecks.io) (period 1 minute, grace 3 minutes),
+   put its ping URL in `HEARTBEAT_URL`, then `docker compose up -d`. If the copy
+   engine or the whole server stops, it emails you. `https://<your-domain>/api/health/`
+   also returns 503 when the engine is down, for any uptime monitor.
+5. **Backups:** a dump lands in `deploy/backups/` at start-up and then daily (kept
+   `BACKUP_KEEP_DAYS`). Copy them off the server regularly (e.g. `rsync`/`rclone` from a cron job).
+   Restore with `./restore.sh backups/core-<date>.sql.gz`.
 
-- **db** — Postgres (separate volume from dev)
-- **web** — Django via gunicorn (no source mount; baked into image)
-- **nginx** — serves built Vue SPA + reverse-proxies `/api/`, `/admin/`, `/static/` to gunicorn
+Behind Cloudflare Tunnel or another HTTPS proxy? Set `SITE_ADDRESS=:80`. To try
+the production stack on your own computer: `SITE_ADDRESS=:80 ./start.sh`, then
+open http://localhost (stop it with `./stop.sh`).
 
-Access:
+**Updating:** `git pull && ./start.sh` (rebuilds, migrates, restarts).
 
-- App: http://localhost/
-- API: http://localhost/api/health/
-- Admin: http://localhost/admin/
-
-The frontend bundle is rebuilt on `--build` from the current state of `frontend/`. Nothing is shared with the dev stacks at runtime.
+In production, Django admin is not exposed (`/admin` returns 404), debug is off,
+logins are rate-limited (`LOGIN_RATE_LIMIT`, default 10/min) and secure cookies
+are on.
 
 ## Environment files
 
-Each stack has its own `.env` (gitignored) and `.env.example` (committed).
-
-| Var | Used by | Notes |
-|---|---|---|
-| `DJANGO_SECRET_KEY` | backend, nginx | Use distinct values per env |
-| `DJANGO_DEBUG` | backend, nginx | `True` in dev, `False` in prod |
-| `DJANGO_ALLOWED_HOSTS` | backend, nginx | Comma-separated |
-| `DJANGO_CORS_ALLOWED_ORIGINS` | backend | Frontend origin(s) for dev (`http://localhost:5173`); empty in prod |
-| `DJANGO_CSRF_TRUSTED_ORIGINS` | backend, nginx | Required in prod for admin login over HTTP/HTTPS |
-| `POSTGRES_*` | backend, nginx | DB name/user/password/host/port |
-| `DJANGO_SUPERUSER_*` | backend, nginx | Used by `start.sh` to bootstrap admin |
-| `VITE_API_BASE_URL` | frontend | Dev: `http://localhost:8000/api`. Overridden to `/api` in the prod build |
+Each stack has its own `.env` (gitignored) and `.env.example` (committed, with
+comments explaining every value): `backend/.env` (development), `frontend/.env`
+(development), `deploy/.env` (production). See [docs/GUIDE.md](docs/GUIDE.md) section 7.
 
 ## API endpoints
 
@@ -156,7 +163,7 @@ There is no public sign-up; add users in Django admin.
 
 | Method | Path | Notes |
 |---|---|---|
-| GET  | `/api/health/` | Liveness check (no auth) |
+| GET  | `/api/health/` | No auth. 200 if the copy engine ran in the last minute, else 503 |
 | POST | `/api/auth/login/` | `{username, password}` → `{token, expiry}` (no auth) |
 | POST | `/api/auth/logout/`, `/api/auth/logoutall/` | Invalidate this / all tokens |
 | GET  | `/api/auth/me/` | Current user |

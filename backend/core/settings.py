@@ -31,6 +31,13 @@ CORS_ALLOWED_ORIGINS = [
 # Where the website lives (used to forward Zerodha's login redirect to it).
 FRONTEND_URL = env("FRONTEND_URL", default="http://localhost:5173").rstrip("/")
 
+# Production hardening (DEBUG off = behind the HTTPS proxy in deploy/).
+if not DEBUG:
+    SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
+    SESSION_COOKIE_SECURE = env.bool("DJANGO_SECURE_COOKIES", default=True)
+    CSRF_COOKIE_SECURE = SESSION_COOKIE_SECURE
+    SECURE_CONTENT_TYPE_NOSNIFF = True
+
 CSRF_TRUSTED_ORIGINS = [
     o.strip() for o in env("DJANGO_CSRF_TRUSTED_ORIGINS", default="").split(",") if o.strip()
 ]
@@ -126,6 +133,11 @@ REST_FRAMEWORK = {
     "DEFAULT_PERMISSION_CLASSES": (
         "rest_framework.permissions.IsAuthenticated",
     ),
+    # Slow down password guessing on the login endpoint.
+    "DEFAULT_THROTTLE_RATES": {"login": env("LOGIN_RATE_LIMIT", default="10/min")},
+    # Reverse proxies in front of Django (1 behind deploy/'s Caddy), so the
+    # throttle sees the real client IP from X-Forwarded-For.
+    "NUM_PROXIES": env.int("NUM_PROXIES", default=0),
 }
 
 REST_KNOX = {
@@ -138,6 +150,13 @@ REST_KNOX = {
 # ---------- Redis / Channels / Celery ----------
 
 REDIS_URL = env("REDIS_URL", default="redis://redis:6379/0")
+
+CACHES = {
+    "default": {
+        "BACKEND": "django.core.cache.backends.redis.RedisCache",
+        "LOCATION": REDIS_URL,
+    },
+}
 
 CHANNEL_LAYERS = {
     "default": {
@@ -168,6 +187,11 @@ CELERY_BEAT_SCHEDULE = {
     },
     # Refresh F&O lot sizes each weekday morning (IST, see CELERY_TIMEZONE).
     # Also runs right after the master logs in to Zerodha.
+    # Email a reminder if any account still needs today's Zerodha login.
+    "login-reminder": {
+        "task": "copytrading.tasks.login_reminder",
+        "schedule": crontab(hour=8, minute=45, day_of_week="mon-fri"),
+    },
     "sync-instruments-daily": {
         "task": "copytrading.tasks.sync_instruments",
         "schedule": crontab(hour=9, minute=0, day_of_week="mon-fri"),
@@ -187,6 +211,13 @@ COPYTRADING_ALERT_EMAIL_COOLDOWN = env.int(
 
 # The copy mode (off / dry run / live) and alert recipients are set from the
 # web UI Settings page (stored in the AppSettings table), not here.
+
+# Dead-man's switch: the copy engine pings this URL about once a minute while
+# it is running (e.g. a free healthchecks.io check). If the pings stop - worker
+# or scheduler crashed, server down - that service alerts you. Blank = off.
+HEARTBEAT_URL = env("HEARTBEAT_URL", default="")
+# /api/health/ reports the engine as down if it hasn't run for this long.
+ENGINE_STALE_SECONDS = env.int("ENGINE_STALE_SECONDS", default=60)
 
 # Key for encrypting broker API secrets / access tokens in the database.
 # Generate: python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"

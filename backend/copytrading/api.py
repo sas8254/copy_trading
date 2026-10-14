@@ -102,6 +102,9 @@ def _checks(accounts: list[BrokerAccount], app: AppSettings) -> list[dict]:
     def add(ok, text, level="error"):
         checks.append({"ok": ok, "level": "ok" if ok else level, "text": text})
 
+    from .heartbeat import engine_alive
+
+    add(engine_alive(), "Copy engine running")
     master = next((a for a in accounts if a.is_master), None)
     copies = [a for a in accounts if not a.is_master and a.active]
 

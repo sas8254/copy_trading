@@ -1,0 +1,3 @@
+# Scripts and configs run inside Linux containers / servers.
+*.sh text eol=lf
+deploy/Caddyfile text eol=lf

@@ -191,6 +191,10 @@ for copies that are already queued.
 | `COPYTRADING_FILL_GRACE_SECONDS` | After the master fills, how long a copy may keep waiting at its own price before the rest is bought at market (default 15). |
 | `COPYTRADING_COPY_MAX_RETRIES` | Retries on *transient* failures (default 3). Margin/RMS errors are never retried. |
 | `COPYTRADING_ALERT_EMAIL_COOLDOWN` | Minimum seconds between re-emails of the same open alert (default 900). |
+| `HEARTBEAT_URL` | Dead-man's switch: pinged about once a minute while the copy engine runs (e.g. a healthchecks.io check), which alerts you if the pings stop. |
+| `ENGINE_STALE_SECONDS` | `/api/health/` and Home report the engine as down after this many seconds without a pass (default 60). |
+| `LOGIN_RATE_LIMIT` | Website login attempts allowed per IP (default `10/min`). |
+| `FRONTEND_URL` | The website's address (Zerodha login redirects that hit the backend are forwarded here). |
 | `COPYTRADING_FORCE_MARKET_OPEN` | **Testing only.** Runs the loops outside 9:15–15:30 IST. |
 
 ### `frontend/.env`
@@ -205,7 +209,7 @@ for copies that are already queued.
 
 | Page | What's there |
 |---|---|
-| **Home** | Copy mode, market open/closed, readiness checklist, open alerts, recent orders. Updates live. |
+| **Home** | Copy mode, market open/closed, readiness checklist (incl. "copy engine running"), open alerts, recent orders. Updates live. |
 | **Accounts** | Add/edit/disable/delete accounts, Zerodha login, make master. |
 | **Positions** | Master's positions with P&L, and for each copy account: master qty → expected → actual, with mismatches highlighted. Auto-refreshes every 10s. |
 | **Orders** | Every master order the app saw (status, filled/qty), with each copy's live state: open, filled, part-filled, cancelled, top-up, how often it was modified, and errors. |
@@ -242,7 +246,10 @@ Run with `docker compose exec web python manage.py <command>` from `backend/`.
    if anything drifts.
 7. **Idempotency**: one copy (plus at most one top-up) per trade and copy account, so nothing fires twice.
    Extra quantity on a copy is never auto-exited; you decide.
-8. **Locked down**: every API call and the live feed need a login; there is no public
+8. **Watched from outside**: a heartbeat to a dead-man's switch and `/api/health/`
+   catch a stopped engine or server; a weekday 8:45 AM reminder email if any
+   account still needs its Zerodha login.
+9. **Locked down**: every API call and the live feed need a login; there is no public
    sign-up; broker secrets are encrypted and never sent back to the browser.
 
 ---

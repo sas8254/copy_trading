@@ -1,0 +1,128 @@
+# Production stack: everything needed to copy trade on a server, behind HTTPS.
+#
+#   caddy          HTTPS (automatic certificates) + serves the website + proxies /api and /ws
+#   web            Django API + live updates (Daphne)
+#   celery_worker  places / modifies / cancels copy orders
+#   celery_beat    runs the copy engine every 2s, lot-size sync, login reminder
+#   kite_ticker    optional instant feed from Zerodha (idle unless enabled in Settings)
+#   db, redis      private (no ports exposed)
+#   backup         daily database dump into ./backups
+#
+# Start with ./start.sh (see ../README.md, "Deploying to a server").
+
+name: core-prod
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+x-backend: &backend
+  build:
+    context: ../backend
+  image: copytrading-backend
+  restart: unless-stopped
+  env_file: .env
+  environment:
+    DJANGO_DEBUG: "False"
+    NUM_PROXIES: "1"  # Caddy
+  depends_on:
+    migrate:
+      condition: service_completed_successfully
+  logging: *logging
+
+services:
+  db:
+    image: postgres:16
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - postgres_data_prod:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    logging: *logging
+
+  redis:
+    image: redis:7.2-alpine
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    logging: *logging
+
+  # One-shot: apply database migrations before anything else starts.
+  migrate:
+    <<: *backend
+    restart: "no"
+    command: sh -c "python manage.py migrate --noinput && python manage.py collectstatic --noinput -v 0"
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  web:
+    <<: *backend
+    command: daphne -b 0.0.0.0 -p 8000 --proxy-headers core.asgi:application
+
+  celery_worker:
+    <<: *backend
+    command: celery -A core worker -l info --concurrency 4
+
+  celery_beat:
+    <<: *backend
+    command: celery -A core beat -l info --schedule /tmp/celerybeat-schedule
+
+  kite_ticker:
+    <<: *backend
+    command: python manage.py kite_ticker
+
+  caddy:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      SITE_ADDRESS: ${SITE_ADDRESS}
+    volumes:
+      - caddy_data:/data  # certificates - keep this volume
+      - caddy_config:/config
+    depends_on:
+      - web
+    logging: *logging
+
+  backup:
+    image: postgres:16
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - ./backups:/backups
+    depends_on:
+      db:
+        condition: service_healthy
+    # A dump right away, then every 24h; keeps BACKUP_KEEP_DAYS days.
+    command: >
+      sh -c 'while true; do
+        f=/backups/core-$$(date +%Y-%m-%d_%H%M).sql.gz;
+        pg_dump -h db -U "$$POSTGRES_USER" "$$POSTGRES_DB" | gzip > "$$f" && echo "backup written: $$f";
+        find /backups -name "core-*.sql.gz" -mtime +$${BACKUP_KEEP_DAYS:-14} -delete;
+        sleep 86400;
+      done'
+    logging: *logging
+
+volumes:
+  postgres_data_prod:
+  caddy_data:
+  caddy_config:

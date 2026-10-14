@@ -101,10 +101,16 @@ def pos(symbol, qty, exchange="NFO"):
                     pnl=Decimal("0"))
 
 
+LOCMEM = {"default": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache"}}
+
+
 @override_settings(COPYTRADING_FORCE_MARKET_OPEN=True, COPYTRADING_COPY_MAX_RETRIES=0,
-                   COPYTRADING_FILL_GRACE_SECONDS=0)
+                   COPYTRADING_FILL_GRACE_SECONDS=0, CACHES=LOCMEM, HEARTBEAT_URL="")
 class CopyTradingTestCase(TestCase):
     def setUp(self):
+        from django.core.cache import cache
+
+        cache.clear()
         for target in ("positions", "dispatch", "accounts", "sync"):
             self.enterContext(patch(f"copytrading.services.{target}.get_client", fake_get_client))
         # Celery isn't running in tests: place copy orders inline.
@@ -567,3 +573,40 @@ class ApiTests(CopyTradingTestCase):
         self.assertEqual(r.status_code, 200)
         self.assertEqual(r.data["mode"], CopyMode.LIVE)
         self.assertTrue(any(c["ok"] for c in r.data["checks"]))
+
+
+class OperationsTests(CopyTradingTestCase):
+    def test_health_reports_engine_down_until_it_runs(self):
+        r = APIClient().get("/api/health/")
+        self.assertEqual((r.status_code, r.data["status"]), (503, "engine_down"))
+        from .tasks import poll_master_orders
+
+        poll_master_orders()
+        r = APIClient().get("/api/health/")
+        self.assertEqual((r.status_code, r.data["status"]), (200, "ok"))
+
+    @override_settings(HEARTBEAT_URL="https://hc.example/ping")
+    def test_heartbeat_pings_at_most_once_a_minute(self):
+        from .heartbeat import beat
+
+        with patch("copytrading.heartbeat.requests.get") as get:
+            beat()
+            beat()
+        get.assert_called_once_with("https://hc.example/ping", timeout=5)
+
+    def test_login_is_rate_limited(self):
+        User.objects.create_user("me", password="pw")
+        client = APIClient()
+        codes = [client.post("/api/auth/login/", {"username": "me", "password": "wrong"}).status_code
+                 for _ in range(11)]
+        self.assertEqual(codes[-1], 429)
+        self.assertNotIn(429, codes[:10])
+
+    def test_login_reminder_alerts_for_accounts_needing_login(self):
+        from .tasks import login_reminder
+
+        self.assertEqual(login_reminder(), {"ok": True})
+        self.copy.token_updated_at = timezone.now() - timedelta(days=2)
+        self.copy.save()
+        self.assertEqual(login_reminder(), {"missing": ["Me"]})
+        self.assertIn("Me", Alert.objects.get(kind=AlertKind.TOKEN_EXPIRED).message)

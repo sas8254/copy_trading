@@ -28,3 +28,6 @@ staticfiles/
 *.swp
 .DS_Store
 Thumbs.db
+
+# Production database backups
+deploy/backups/
