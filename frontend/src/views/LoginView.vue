@@ -20,7 +20,9 @@ async function onSubmit() {
     const next = typeof route.query.next === 'string' ? route.query.next : '/'
     router.push(next)
   } catch (e) {
-    error.value = e.response?.data?.non_field_errors?.[0] || 'Login failed.'
+    error.value = e.response?.status === 429
+      ? 'Too many attempts. Wait a minute and try again.'
+      : e.response?.data?.non_field_errors?.[0] || 'Login failed.'
   } finally {
     loading.value = false
   }

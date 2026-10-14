@@ -1,3 +1,8 @@
+> **Historical document.** This is the original v1 design plan. The app has
+> changed since (website for everything, one master with per-account settings,
+> mirror mode, Caddy deployment). For current behaviour see
+> [docs/GUIDE.md](docs/GUIDE.md) and [docs/DEVELOPER.md](docs/DEVELOPER.md).
+
 # Copy Trading — v1 Plan
 
 A Django app that mirrors trades from a **master** brokerage account onto one or

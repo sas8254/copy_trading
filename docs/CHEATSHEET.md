@@ -1,16 +1,19 @@
 # Copy Trading — Cheat Sheet
 
-One-page daily reference. Full details in [GUIDE.md](./GUIDE.md).
+One page for daily use. Details: [GUIDE.md](./GUIDE.md) · Server: [DEPLOYMENT.md](./DEPLOYMENT.md)
 
 ---
 
-## Every trading morning (Zerodha logins expire ~6 AM IST)
+## Every trading morning (before 9:15 AM)
 
-1. Open **http://localhost:5173**
-2. **Accounts** → click **Login to Zerodha** on each account
-3. **Home** → the checklist should be all green
+Zerodha logins expire around 6 AM IST.
 
-Nothing to restart. Lot sizes sync automatically.
+1. Open the website (dev: **http://localhost:5173**, server: **https://&lt;your-domain&gt;**)
+2. **Accounts** → **Login to Zerodha** on each account
+3. **Home** → "Ready to trade?" all green ✓
+
+Reminder email at 8:45 AM if you forget. Nothing to restart.
+Only master orders placed **after** the master's login are copied.
 
 ---
 
@@ -18,37 +21,66 @@ Nothing to restart. Lot sizes sync automatically.
 
 | I want to… | Go to |
 | --- | --- |
-| Turn copying Off / Dry run / Live | **Settings → Copying** |
-| Copy after fill vs mirror the master's orders | **Settings → Copy style** |
-| Stop everything right now | **Settings → Copying → Off** |
-| Add or edit an account, change a multiplier | **Accounts** |
-| Change which account is the master | **Accounts → ⋮ → Make master** |
-| Check master vs copy positions | **Positions** |
-| See what was copied and why something failed | **Orders** |
-| Change alert emails / send a test email | **Settings → Alert emails** |
+| **Stop all copying now** | **Settings → Copying → Off** |
+| Switch Off / Dry run / Live | Settings → Copying |
+| Copy after fill vs mirror the master's orders | Settings → Copy style |
+| Instant feed (paid Zerodha add-on) | Settings → Instant copy feed |
+| Alert emails / test email | Settings → Alert emails |
+| Add / edit an account, change a multiplier | Accounts → Add account / Edit |
+| Change the master | Accounts → ⋮ → Make master |
+| Pause one account | Accounts → ⋮ → Disable |
+| Master vs copy positions, P&L | Positions |
+| What was copied, errors | Orders |
+| Alerts | Home |
 
 ---
 
-## Start / stop the app
+## Quantity rule
 
-Run from `backend/` (and the same in `frontend/` for the website):
+`copy = master × multiplier`, rounded **down** to whole lots.
+Example: lot 75, multiplier 1.5 → master 75 → copy 75; master 150 → copy 225.
+
+---
+
+## Copy styles in one line each
+
+- **When filled:** copy after the master's order fills. Unfilled/cancelled orders never reach copies.
+- **Mirror:** copy when placed at the same price; follow modifications and cancels.
+
+Both: after the master's order finishes, the app waits 15 s for the copy, then
+buys/sells any shortfall at MARKET (top-up). Extra quantity → alert only.
+
+---
+
+## Alerts → what to do
+
+| Alert | Do this |
+| --- | --- |
+| Login needed | Accounts → Login to Zerodha |
+| Copy order failed (margin etc.) | Fix cause; trade manually if needed |
+| "Only X of Y could be copied" | Buy/sell the rest in Zerodha |
+| "... holds N extra" | Keep or exit the extra in Zerodha |
+| Position mismatch | Check Positions; fix in Zerodha (clears itself when matched) |
+| Zero quantity skipped | Raise the multiplier or set "Round up to 1 lot" |
+| Instant copy feed refused (403) | Turn the feed off (no add-on); copying still works |
+
+---
+
+## Commands (run in `backend/`, or `deploy/` on a server)
 
 ```bash
+docker compose ps                                                 # status
 docker compose up -d                                              # start everything
-docker compose ps                                                 # status of all containers
 docker compose down                                               # stop (keeps data)
-docker compose logs -f celery_worker                              # watch the copy/reconcile loop
-docker compose logs -f kite_ticker                                # watch the live order feed
-docker compose restart celery_worker celery_beat kite_ticker      # only after editing backend code
+docker compose logs -f celery_worker                              # watch the copy engine
+docker compose logs -f kite_ticker                                # watch the instant feed
+docker compose restart web celery_worker celery_beat kite_ticker  # after editing backend code (dev)
+docker compose exec web python manage.py test copytrading         # tests (fake Zerodha)
+docker compose exec web python manage.py kite_sync_instruments    # re-sync lot sizes
 ```
 
----
-
-## Tests (safe, fake broker, no real orders)
-
-```bash
-docker compose exec web python manage.py test copytrading
-```
+Server only: `./start.sh` (start/update), `./stop.sh`, admin via
+`ssh -L 8000:127.0.0.1:8000 you@server` → http://localhost:8000/admin/
 
 ---
 
@@ -56,11 +88,10 @@ docker compose exec web python manage.py test copytrading
 
 | Problem | Fix |
 | --- | --- |
-| "Login needed" alert | Accounts → Login to Zerodha |
-| Logged in as the wrong Zerodha user | Log out at kite.zerodha.com, log in again from Accounts |
-| Nothing copying | Settings mode, market hours (9:15–15:30 IST), and only orders filled *after* login are copied |
-| F&O quantity wrong / `lot 1` | Wait for the lot-size sync after the master logs in, or `docker compose exec web python manage.py kite_sync_instruments` |
-| "Instant copy feed refused (403)" | Needs the paid streaming add-on; turn the feed off on Settings (copying works via 2s polling) |
-| "holds N extra" alert | Copy filled but the master cancelled; exit the extra in Zerodha if you don't want it |
-| "Only X of Y could be copied" | Top-up failed (e.g. margin); fix in Zerodha |
-| No emails | Settings → alert emails + `EMAIL_*` in `backend/.env` → **Send test email** |
+| Nothing copying | Mode (Settings), market hours (9:15–15:30 IST Mon–Fri), master logged in, order placed after login |
+| "Copy engine running" red | `docker compose up -d`; check `docker compose logs celery_worker` |
+| Logged in as the wrong Zerodha user | Log out at kite.zerodha.com (or private window), log in again |
+| Zerodha login lands on an error page | Kite app Redirect URL = `<website>/kite/callback` |
+| F&O quantity uses `lot 1` | Wait a minute after the master's login, or `kite_sync_instruments` |
+| No emails | Settings → alert emails → **Send test email** (error explains); `EMAIL_*` in `.env` |
+| "Too many attempts" on login | Wait one minute |
