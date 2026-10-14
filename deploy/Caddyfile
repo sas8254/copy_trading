@@ -12,7 +12,8 @@
 	}
 
 	route {
-		# Django admin is not exposed in production; everything is in the website.
+		# Django admin is not public. Use it over an SSH tunnel to 127.0.0.1:8000
+		# (see docker-compose.yml).
 		respond /admin* 404
 
 		# API and live updates (WebSocket) go to Django.

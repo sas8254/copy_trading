@@ -9,7 +9,7 @@ with a per-account quantity multiplier. Everything is managed from the website.
 Two ways to run it, each a Docker Compose stack with its own `.env` and `start.sh` / `stop.sh`:
 
 - **Development** on your computer: `backend/` + `frontend/` (code reloads, debug on).
-- **Production** on a server: `deploy/` (HTTPS, everything baked into images, backups).
+- **Production** on a server: `deploy/` (HTTPS via Let's Encrypt, everything baked into images).
 
 ## Stack
 
@@ -51,13 +51,12 @@ my_project/
 │   ├── vite.config.js
 │   ├── .env / .env.example
 │   └── start.sh / stop.sh
-└── deploy/           # production: HTTPS + full copy-trading stack + backups
-    ├── docker-compose.yml       # caddy, web, celery_worker, celery_beat, kite_ticker, db, redis, backup
+└── deploy/           # production: HTTPS + full copy-trading stack
+    ├── docker-compose.yml       # caddy, web, celery_worker, celery_beat, kite_ticker, db, redis
     ├── Caddyfile                # HTTPS, website, /api + /ws proxy
     ├── Dockerfile               # builds the website into the Caddy image
     ├── .env / .env.example
-    ├── start.sh / stop.sh / restore.sh
-    └── backups/                 # daily database dumps (gitignored)
+    └── start.sh / stop.sh
 ```
 
 ## Prerequisites
@@ -113,8 +112,9 @@ To stop:
 ## Deploying to a server
 
 Everything runs from `deploy/`: Caddy (HTTPS), the website, the API, the copy
-engine (Celery worker + beat), the optional Zerodha ticker, Postgres, Redis and
-daily backups. Postgres and Redis are not reachable from outside.
+engine (Celery worker + beat), the optional Zerodha ticker, Postgres and Redis.
+Postgres and Redis are not reachable from outside. There are no automatic
+database backups yet.
 
 **You need:** a small Linux VPS (2 GB RAM is plenty) with Docker, a domain whose
 DNS A record points at the server, and ports 80 + 443 open.
@@ -126,8 +126,8 @@ DNS A record points at the server, and ports 80 + 443 open.
    ./start.sh
    ```
    `start.sh` refuses to start while placeholders are left, builds everything,
-   runs migrations and creates the website login. Caddy fetches the HTTPS
-   certificate on first start.
+   runs migrations and creates the website login. Caddy gets the HTTPS
+   certificate from Let's Encrypt on first start and renews it automatically.
 2. **Kite apps:** set each app's Redirect URL to `https://<your-domain>/kite/callback`.
 3. **Website:** add the accounts again (the server has its own database), log in
    to Zerodha, set alert emails.
@@ -136,9 +136,9 @@ DNS A record points at the server, and ports 80 + 443 open.
    put its ping URL in `HEARTBEAT_URL`, then `docker compose up -d`. If the copy
    engine or the whole server stops, it emails you. `https://<your-domain>/api/health/`
    also returns 503 when the engine is down, for any uptime monitor.
-5. **Backups:** a dump lands in `deploy/backups/` at start-up and then daily (kept
-   `BACKUP_KEEP_DAYS`). Copy them off the server regularly (e.g. `rsync`/`rclone` from a cron job).
-   Restore with `./restore.sh backups/core-<date>.sql.gz`.
+5. **Django admin (for development / emergencies):** not public (`/admin` returns
+   404). Open an SSH tunnel, `ssh -L 8000:127.0.0.1:8000 you@server`, then visit
+   http://localhost:8000/admin/.
 
 Behind Cloudflare Tunnel or another HTTPS proxy? Set `SITE_ADDRESS=:80`. To try
 the production stack on your own computer: `SITE_ADDRESS=:80 ./start.sh`, then
@@ -146,9 +146,9 @@ open http://localhost (stop it with `./stop.sh`).
 
 **Updating:** `git pull && ./start.sh` (rebuilds, migrates, restarts).
 
-In production, Django admin is not exposed (`/admin` returns 404), debug is off,
-logins are rate-limited (`LOGIN_RATE_LIMIT`, default 10/min) and secure cookies
-are on.
+In production, `DJANGO_DEBUG` comes from `deploy/.env` (keep it `False`), Django
+admin is only reachable over the SSH tunnel, website logins are limited to
+10 attempts per minute per IP (`LOGIN_RATE_LIMIT`), and secure cookies are on.
 
 ## Environment files
 
@@ -159,7 +159,7 @@ comments explaining every value): `backend/.env` (development), `frontend/.env`
 ## API endpoints
 
 All return/accept JSON and require `Authorization: Token <key>` except health and login.
-There is no public sign-up; add users in Django admin.
+There is no public sign-up; add users in Django admin (on a server: over the SSH tunnel).
 
 | Method | Path | Notes |
 |---|---|---|
@@ -180,7 +180,7 @@ There is no public sign-up; add users in Django admin.
 | GET  | `/api/copytrading/alerts/?resolved=` | Alerts |
 | POST | `/api/copytrading/alerts/<id>/resolve/`, `/api/copytrading/alerts/resolve-all/` | Dismiss alerts |
 | WS   | `/ws/dashboard/?token=<key>` | Live event feed |
-| —    | `/admin/` | Django admin (backup) |
+| —    | `/admin/` | Django admin (dev: localhost:8000; server: SSH tunnel only) |
 
 ## Adding a new Django app
 

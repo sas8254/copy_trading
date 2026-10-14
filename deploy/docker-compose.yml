@@ -6,7 +6,10 @@
 #   celery_beat    runs the copy engine every 2s, lot-size sync, login reminder
 #   kite_ticker    optional instant feed from Zerodha (idle unless enabled in Settings)
 #   db, redis      private (no ports exposed)
-#   backup         daily database dump into ./backups
+#
+# Django admin is not public: Caddy returns 404 for /admin. It is reachable
+# only from the server itself on 127.0.0.1:8000, e.g. through an SSH tunnel:
+#   ssh -L 8000:127.0.0.1:8000 you@server   then open http://localhost:8000/admin/
 #
 # Start with ./start.sh (see ../README.md, "Deploying to a server").
 
@@ -25,7 +28,6 @@ x-backend: &backend
   restart: unless-stopped
   env_file: .env
   environment:
-    DJANGO_DEBUG: "False"
     NUM_PROXIES: "1"  # Caddy
   depends_on:
     migrate:
@@ -60,7 +62,7 @@ services:
   migrate:
     <<: *backend
     restart: "no"
-    command: sh -c "python manage.py migrate --noinput && python manage.py collectstatic --noinput -v 0"
+    command: python manage.py migrate --noinput
     depends_on:
       db:
         condition: service_healthy
@@ -69,7 +71,10 @@ services:
 
   web:
     <<: *backend
-    command: daphne -b 0.0.0.0 -p 8000 --proxy-headers core.asgi:application
+    # Static files (admin CSS/JS) are collected here so whitenoise can serve them.
+    command: sh -c "python manage.py collectstatic --noinput -v 0 && daphne -b 0.0.0.0 -p 8000 --proxy-headers core.asgi:application"
+    ports:
+      - "127.0.0.1:8000:8000"  # server-local only: Django admin over an SSH tunnel
 
   celery_worker:
     <<: *backend
@@ -99,27 +104,6 @@ services:
       - caddy_config:/config
     depends_on:
       - web
-    logging: *logging
-
-  backup:
-    image: postgres:16
-    restart: unless-stopped
-    env_file: .env
-    environment:
-      PGPASSWORD: ${POSTGRES_PASSWORD}
-    volumes:
-      - ./backups:/backups
-    depends_on:
-      db:
-        condition: service_healthy
-    # A dump right away, then every 24h; keeps BACKUP_KEEP_DAYS days.
-    command: >
-      sh -c 'while true; do
-        f=/backups/core-$$(date +%Y-%m-%d_%H%M).sql.gz;
-        pg_dump -h db -U "$$POSTGRES_USER" "$$POSTGRES_DB" | gzip > "$$f" && echo "backup written: $$f";
-        find /backups -name "core-*.sql.gz" -mtime +$${BACKUP_KEEP_DAYS:-14} -delete;
-        sleep 86400;
-      done'
     logging: *logging
 
 volumes:

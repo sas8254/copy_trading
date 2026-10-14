@@ -12,13 +12,15 @@ if grep -qE '=<[^>]*>' .env; then
     grep -nE '=<[^>]*>' .env | sed 's/=.*/=.../' >&2
     exit 1
 fi
-for var in DJANGO_SECRET_KEY POSTGRES_PASSWORD FIELD_ENCRYPTION_KEY SITE_ADDRESS DJANGO_SUPERUSER_PASSWORD; do
+for var in DJANGO_SECRET_KEY POSTGRES_PASSWORD FIELD_ENCRYPTION_KEY SITE_ADDRESS DJANGO_SUPERUSER_PASSWORD DJANGO_DEBUG; do
     if ! grep -qE "^${var}=.+" .env; then
         echo "ERROR: ${var} is empty in deploy/.env" >&2
         exit 1
     fi
 done
-mkdir -p backups
+if grep -qiE '^DJANGO_DEBUG=(true|1|yes)' .env; then
+    echo "WARNING: DJANGO_DEBUG is on. Error pages will show code and settings." >&2
+fi
 
 echo ">> Building and starting..."
 docker compose up --build -d
@@ -45,3 +47,4 @@ echo ""
 echo ">> Up. Website: ${site/#:80/http://localhost}"
 echo "   Health:  <website>/api/health/  (503 until the copy engine has run once)"
 echo "   Logs:    docker compose logs -f celery_worker"
+echo "   Admin:   ssh -L 8000:127.0.0.1:8000 <you>@<server>, then http://localhost:8000/admin/"
